@@ -49,9 +49,13 @@ export async function rankDailyCandidates(groups: CandidateGroup[]) {
       communitySignals: group.items.map((item) => ({ source: item.source, score: item.score || 0 })).slice(0, 5),
     };
   });
+  const productHuntMinimum = Math.min(
+    3,
+    candidates.filter((candidate) => candidate.sources.includes("product_hunt")).length,
+  );
   const ids = await requestRanking(
     cacheKey("daily", candidates),
-    `Select and rank up to 30 of these eligible early-stage AI products for today's personal discovery feed. Return up to 30 IDs, best first. Use recency, evidence of real product activity, early-stage status, differentiation, and credible community interest. Avoid established general-purpose products and weak/ambiguous matches.\n\nCandidates:\n${JSON.stringify(candidates)}`,
+    `Select and rank up to 30 of these eligible early-stage AI products for today's personal discovery feed. Return up to 30 IDs, best first. Use recency, evidence of real product activity, early-stage status, differentiation, and credible community interest. Include at least ${productHuntMinimum} products with "product_hunt" in their sources when that many suitable candidates are available, so the feed represents Product Hunt alongside the other sources. Avoid established general-purpose products and weak/ambiguous matches.\n\nCandidates:\n${JSON.stringify(candidates)}`,
     groups.map((group) => group.identity),
     30,
   );
