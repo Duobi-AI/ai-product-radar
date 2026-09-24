@@ -1,13 +1,14 @@
 import { eq, inArray } from "drizzle-orm";
 import { dailyRuns, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
-import { identityFor, isAiRelated } from "@/lib/classify";
+import { identityFor } from "@/lib/classify";
+import { prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
 import { collectProductHunt } from "@/lib/sources/product-hunt";
 import type { SourceCandidate } from "@/lib/domain";
-import { rankDailyCandidates, type CandidateGroup } from "@/lib/llm-ranking";
+import { rankDailyCandidates } from "@/lib/llm-ranking";
 
 const SOURCE_COLLECTORS = [
   ["product_hunt", collectProductHunt],
@@ -17,25 +18,6 @@ const SOURCE_COLLECTORS = [
 ] as const;
 
 export const MAX_DAILY_PRODUCTS = 30;
-
-function filterDailyCandidates(candidates: SourceCandidate[]): CandidateGroup[] {
-  const groups = new Map<string, SourceCandidate[]>();
-  for (const candidate of candidates) {
-    const name = candidate.name.trim();
-    const description = candidate.description.trim();
-    const date = candidate.announcedAt?.getTime();
-    const text = [name, description, JSON.stringify(candidate.metadata || {})].join(" ");
-    // Collectors already enforce AI relevance and recency; this trims malformed or
-    // effectively empty records before ranking the remaining early-stage projects.
-    if (name.length < 3 || !isAiRelated(text) || (!description && !candidate.websiteUrl) || (date && date > Date.now() + 24 * 60 * 60 * 1000)) continue;
-    const identity = identityFor(name, candidate.websiteUrl);
-    const group = groups.get(identity) || [];
-    group.push(candidate);
-    groups.set(identity, group);
-  }
-
-  return [...groups.entries()].map(([identity, items]) => ({ identity, items }));
-}
 
 function pacificDate(date: Date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -161,7 +143,7 @@ export async function runDailyIngestion(options: { force?: boolean } = {}) {
   const candidates = collectionResults.flatMap((result) => result.candidates);
   let selectedProducts: CandidateGroup[];
   try {
-    selectedProducts = (await rankDailyCandidates(filterDailyCandidates(candidates))).slice(0, MAX_DAILY_PRODUCTS);
+    selectedProducts = (await rankDailyCandidates(prepareDailyCandidates(candidates))).slice(0, MAX_DAILY_PRODUCTS);
   } catch (error) {
     await db.update(dailyRuns)
       .set({ status: "failed", sourceResults: { rankingError: error instanceof Error ? error.message : "LLM ranking failed" }, finishedAt: new Date() })

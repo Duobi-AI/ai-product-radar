@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { generateText, Output } from "ai";
 import { z } from "zod";
-import type { ProductListing, SourceCandidate } from "@/lib/domain";
+import type { CandidateGroup } from "@/lib/daily-candidates";
+import type { ProductListing } from "@/lib/domain";
 
 const MODEL = process.env.AI_RANKING_MODEL || "google/gemini-2.5-flash-lite";
 const rankingCache = new Map<string, { expiresAt: number; productIds: string[] }>();
@@ -31,8 +32,6 @@ async function requestRanking(key: string, prompt: string, allowedIds: string[],
   }
   return ordered;
 }
-
-export type CandidateGroup = { identity: string; items: SourceCandidate[] };
 
 export async function rankDailyCandidates(groups: CandidateGroup[]) {
   if (groups.length <= 1) return groups;
