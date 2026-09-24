@@ -1,8 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { dailyRuns, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
-import { identityFor } from "@/lib/classify";
-import { prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
+import { identityForCandidate, prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
@@ -42,7 +41,7 @@ export function isPacificNoonWindow(date = new Date()) {
 async function storeCandidate(candidate: SourceCandidate) {
   const db = getDb();
   if (!db) throw new Error("Database is not configured");
-  const key = identityFor(candidate.name, candidate.websiteUrl);
+  const key = identityForCandidate(candidate);
   const now = new Date();
   const [product] = await db
     .insert(products)

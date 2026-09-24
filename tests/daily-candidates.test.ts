@@ -28,6 +28,20 @@ test("separate Product Hunt launches sharing the redirect host remain separate",
   ]);
 });
 
+test("separate Product Hunt products sharing a platform homepage host remain separate", () => {
+  const first = productHuntCandidate("AI Prompts Mega Collection", "ai-prompts-mega-collection");
+  const second = productHuntCandidate("Altriba AI", "altriba-ai");
+  first.websiteUrl = "https://demo-platform.example/ai-prompts";
+  second.websiteUrl = "https://demo-platform.example/altriba";
+
+  const groups = prepareDailyCandidates([first, second]);
+
+  assert.deepEqual(groups.map((group) => group.items.map((item) => item.name)), [
+    ["AI Prompts Mega Collection"],
+    ["Altriba AI"],
+  ]);
+});
+
 test("Product Hunt topic evidence keeps a candidate eligible", () => {
   const candidate = productHuntCandidate("Orbit", "orbit");
   candidate.description = "A focused launch planner for small teams.";
