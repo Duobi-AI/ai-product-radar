@@ -1,14 +1,25 @@
 "use client";
 
-import { useState } from "react";
 import { authClient } from "@/lib/auth-client";
+import { useAuthRequest } from "@/components/use-auth-request";
 
 export function SignInButton() {
-  const [loading, setLoading] = useState(false);
-  async function signIn() {
-    setLoading(true);
-    await authClient.signIn.social({ provider: "google", callbackURL: window.location.href });
-    setLoading(false);
+  const { loading, error, run } = useAuthRequest();
+
+  function signIn() {
+    void run(
+      () => authClient.signIn.social({
+        provider: "google",
+        callbackURL: "/",
+      }),
+      "Could not start Google sign-in. Please try again.",
+    );
   }
-  return <button className="sign-in" onClick={signIn} disabled={loading}>{loading ? "Opening Google…" : "Sign in with Google"}</button>;
+
+  return <>
+    <button className="sign-in" onClick={signIn} disabled={loading}>
+      {loading ? "Opening Google…" : "Sign in with Google"}
+    </button>
+    {error && <p className="auth-error" role="alert">{error}</p>}
+  </>;
 }
