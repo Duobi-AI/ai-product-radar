@@ -49,14 +49,18 @@ export async function collectProductHunt(since: Date): Promise<SourceCandidate[]
   return (payload.data?.posts?.edges ?? [])
     .map((edge) => edge.node)
     .filter((post): post is HuntPost => Boolean(post?.id && post.name))
-    .filter((post) =>
+    .map((post) => ({
+      post,
+      topics: (post.topics?.edges ?? [])
+        .map((item) => item.node?.name)
+        .filter((topic): topic is string => Boolean(topic)),
+    }))
+    .filter(({ post, topics }) =>
       isAiRelated(
-        [post.name, post.tagline, post.description, ...(post.topics?.edges ?? []).map((item) => item.node?.name)]
-          .filter(Boolean)
-          .join(" "),
+        [post.name, post.tagline, post.description, ...topics].filter(Boolean).join(" "),
       ),
     )
-    .map((post) => {
+    .map(({ post, topics }) => {
       const text = [post.name, post.tagline, post.description].filter(Boolean).join(" ");
       return {
         source: "product_hunt",
@@ -70,7 +74,7 @@ export async function collectProductHunt(since: Date): Promise<SourceCandidate[]
         stage: classifyStage(text),
         announcedAt: new Date(post.createdAt),
         score: post.votesCount,
-        metadata: { votes: post.votesCount, comments: post.commentsCount },
+        metadata: { votes: post.votesCount, comments: post.commentsCount, topics },
       } satisfies SourceCandidate;
     });
 }

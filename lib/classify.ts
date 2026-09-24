@@ -32,7 +32,8 @@ export function identityFor(name: string, websiteUrl?: string | null): string {
   if (websiteUrl) {
     try {
       const host = new URL(websiteUrl).hostname.toLowerCase().replace(/^www\./, "");
-      if (host && !host.includes("github.com") && !host.includes("huggingface.co")) {
+      const isProductHuntRedirect = host === "producthunt.com" || host.endsWith(".producthunt.com");
+      if (host && !host.includes("github.com") && !host.includes("huggingface.co") && !isProductHuntRedirect) {
         return "host:" + host;
       }
     } catch {
