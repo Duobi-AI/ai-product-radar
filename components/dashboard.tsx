@@ -7,6 +7,7 @@ import { Search, SlidersHorizontal } from "lucide-react";
 import type { ProductListing } from "@/lib/domain";
 import { ProductCard } from "@/components/product-card";
 import { SignOutButton } from "@/components/sign-out-button";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 type Feed = { items: ProductListing[]; total: number; categories: string[]; page: number; pageSize: number; ready: boolean; rankingNotice?: string };
 
@@ -52,7 +53,7 @@ export function Dashboard({ feed, signedIn, userName, filters }: { feed: Feed; s
   }
 
   return <>
-    <header className="topbar"><Link className="brand" href="/"><span className="brand-mark">✳</span> AI Product Radar</Link><nav><Link className="nav-link active" href="/">Discover</Link>{signedIn && <Link className="nav-link" href="/settings">Your signals</Link>}</nav><div className="topbar-end">{signedIn ? <div className="account-actions"><span className="user-chip"><span className="avatar">{(userName || "Y").slice(0, 1).toUpperCase()}</span><span>{userName || "Your feed"}</span></span><SignOutButton /></div> : <Link className="sign-in" href="/sign-in">Sign in</Link>}</div></header>
+    <header className="topbar"><Link className="brand" href="/"><span className="brand-mark">✳</span> AI Product Radar</Link><nav><Link className="nav-link active" href="/">Discover</Link>{signedIn && <Link className="nav-link" href="/settings">Your signals</Link>}</nav><div className="topbar-end">{signedIn ? <div className="account-actions"><span className="user-chip"><span className="avatar">{(userName || "Y").slice(0, 1).toUpperCase()}</span><span>{userName || "Your feed"}</span></span><SignOutButton /></div> : <Link className="sign-in" href="/sign-in">Sign in</Link>}</div><ThemeToggle /></header>
     <main className="page-shell">
       <section className="hero"><div className="eyebrow"><span className="pulse" /> DAILY SCOUTING BRIEF</div><h1>What’s new in <em>AI</em></h1><p className="hero-copy">Early products, fresh launches, and open-source experiments worth a closer look.</p><div className="hero-foot"><span><b>{feed.total}</b> {archive ? "discoveries in the archive" : "products featured today · max 30"}</span><span className="updated-label">Updated daily · 12:00 PM Pacific</span></div></section>
       <section className="feed-section">
