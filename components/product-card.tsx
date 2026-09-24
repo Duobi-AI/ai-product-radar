@@ -30,7 +30,19 @@ export function ProductCard({ product, signedIn }: { product: ProductListing; si
       <div className="card-topline"><span className="stage"><i />{product.stage}</span><time>{new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(product.announcedAt || product.firstSeenAt)}</time></div>
       <div className="product-title-row"><h2>{product.name}</h2>{product.websiteUrl && <a className="icon-link" href={product.websiteUrl} target="_blank" rel="noreferrer" aria-label={`Visit ${product.name}`}><ArrowUpRight size={17} /></a>}</div>
       <p className="product-description">{product.description || "A new AI project discovered in the community."}</p>
-      <div className="card-meta"><span className="category-tag">{product.category}</span><div className="source-list">{product.sources.slice(0, 3).map((source) => <a key={source.id} href={source.sourceUrl} target="_blank" rel="noreferrer">{source.sourceName}<ArrowUpRight size={11} /></a>)}</div></div>
+      <section className="source-section" aria-label="Product sources">
+        <span className="source-heading">{product.sources.length === 1 ? "Source" : `Sources · ${product.sources.length}`}</span>
+        {product.sources.length ? (
+          <div className="source-list">
+            {product.sources.map((source) => (
+              <a key={source.id} href={source.sourceUrl} target="_blank" rel="noreferrer" aria-label={`View ${source.sourceName} source for ${product.name}`}>
+                {source.sourceName}<ArrowUpRight size={12} aria-hidden="true" />
+              </a>
+            ))}
+          </div>
+        ) : <span className="source-empty">No source links available</span>}
+      </section>
+      <div className="card-meta"><span className="category-tag">{product.category}</span></div>
       <div className="card-feedback">
         <span className="feedback-label">Relevant to you?</span>
         <div className="vote-actions">
