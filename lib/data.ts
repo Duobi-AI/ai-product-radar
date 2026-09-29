@@ -1,5 +1,5 @@
 import { and, asc, count, desc, eq, gte, ilike, inArray, lt, or } from "drizzle-orm";
-import { dailyRuns, feedback, productSources, products } from "@/db/schema";
+import { dailyRuns, feedback, productEvidence, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import type { ProductListing } from "@/lib/domain";
 import { rankPersonalizedProducts } from "@/lib/llm-ranking";
@@ -16,6 +16,7 @@ export async function listProducts(options: {
   recommended?: boolean;
   dailySince?: Date | null;
   dailyLimit?: number;
+  showRankingReasons?: boolean;
 }) {
   const db = getDb();
   const pageSize = options.dailySince ? Math.min(options.dailyLimit || DAILY_FEED_LIMIT, DAILY_FEED_LIMIT) : PAGE_SIZE;
@@ -60,8 +61,9 @@ export async function listProducts(options: {
   const ids = rows.map((row) => row.id);
   if (!ids.length) return { items: [] as ProductListing[], total: options.dailySince ? 0 : Number(totalResult[0]?.value || 0), categories: categoryRows.map((row) => row.category), page, pageSize, ready: true };
 
-  const [mentions, votes] = await Promise.all([
+  const [mentions, evidenceRows, votes] = await Promise.all([
     db.select().from(productSources).where(inArray(productSources.productId, ids)),
+    db.select().from(productEvidence).where(inArray(productEvidence.productId, ids)),
     options.userId ? db.select().from(feedback).where(and(eq(feedback.userId, options.userId), inArray(feedback.productId, ids))) : Promise.resolve([]),
   ]);
   const byProduct = new Map<string, ProductListing["sources"]>();
@@ -71,11 +73,14 @@ export async function listProducts(options: {
     byProduct.set(mention.productId, list);
   }
   const voteByProduct = new Map(votes.map((vote) => [vote.productId, vote]));
+  const evidenceByProduct = new Map(evidenceRows.map((evidence) => [evidence.productId, evidence]));
   let items: ProductListing[] = rows.map((row) => {
     const sources = byProduct.get(row.id) || [];
     const vote = voteByProduct.get(row.id);
+    const evidence = evidenceByProduct.get(row.id);
     return { id: row.id, name: row.name, description: row.description, websiteUrl: row.websiteUrl, category: row.category, stage: row.stage,
       announcedAt: row.announcedAt, firstSeenAt: row.firstSeenAt, sources,
+      rankingReason: options.showRankingReasons ? evidence?.rankingReason || null : null,
       feedback: vote ? { direction: vote.direction, reason: vote.reason } : null, relevance: 0 };
   });
   if (options.recommended && options.userId) {

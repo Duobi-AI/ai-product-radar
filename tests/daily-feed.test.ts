@@ -11,6 +11,7 @@ import {
   type DailyFeedPersistence,
 } from "../lib/ingest";
 import type { SourceCandidate } from "../lib/domain";
+import type { EvidenceRecord } from "../lib/evidence";
 
 const NOW = new Date("2026-09-29T19:00:00.000Z");
 
@@ -35,10 +36,12 @@ function fakePersistence(): {
   persisted: string[];
   completed: { localDate: string; sourceResults: Record<string, unknown> } | null;
   ranked: { identity: string; rank: number }[];
+  evidence: Map<string, EvidenceRecord>;
 } {
   const persisted: string[] = [];
   let completed: { localDate: string; sourceResults: Record<string, unknown> } | null = null;
   const ranked: { identity: string; rank: number }[] = [];
+  const evidence = new Map<string, EvidenceRecord>();
 
   return {
     persisted,
@@ -46,6 +49,7 @@ function fakePersistence(): {
       return completed;
     },
     ranked,
+    evidence,
     persistence: {
       getRun: async () => null,
       startRun: async () => {},
@@ -56,6 +60,9 @@ function fakePersistence(): {
           ids.set(group.identity, `product-${group.identity}`);
         }
         return ids;
+      },
+      persistEvidence: async (records) => {
+        for (const [identity, record] of records) evidence.set(identity, record);
       },
       setDailyRanks: async (entries) => {
         ranked.push(...entries);
@@ -72,12 +79,14 @@ function dependencies(input: {
   candidates: SourceCandidate[];
   rank: DailyFeedDependencies["rank"];
   persistence: DailyFeedPersistence;
+  enrichEvidence?: DailyFeedDependencies["enrichEvidence"];
 }): DailyFeedDependencies {
   return {
     now: () => NOW,
     collect: async () => [{ key: "product_hunt", candidates: input.candidates, error: null }],
     persistence: input.persistence,
     rank: input.rank,
+    enrichEvidence: input.enrichEvidence,
   };
 }
 
@@ -101,6 +110,25 @@ test("pre-scoring uses stable source-relative traction and the 45/35/20 weights"
   assert.equal(byIdentity.get("item-3")?.score.sourceRelativeTraction, 1);
   assert.equal(byIdentity.get("item-4")?.score.sourceRelativeTraction, 0);
   assert.equal(byIdentity.get("item-3")?.score.preScore, 0.825);
+});
+
+test("Daily Feed persists official evidence and scores its confidence before ranking", async () => {
+  const items = [candidate(1), candidate(2)];
+  const fake = fakePersistence();
+  const highConfidence: EvidenceRecord = {
+    factualSummary: "A research assistant.", primaryUseCase: "research", audience: "teams", productType: "assistant",
+    officialEvidenceUrl: "https://item-1.example.com", supportingExcerpts: [], confidence: "high", conflicts: [],
+  };
+
+  const result = await runDailyFeed(dependencies({
+    candidates: items,
+    persistence: fake.persistence,
+    enrichEvidence: async () => new Map([["name:ai-item-1", highConfidence]]),
+    rank: async (groups) => groups.map((group) => group.identity),
+  }));
+
+  assert.equal(fake.evidence.get("name:ai-item-1"), highConfidence);
+  assert.equal(result.selected.find((group) => group.identity === "name:ai-item-1")?.score.evidenceConfidence, 1);
 });
 
 test("Daily Feed persists every eligible mention before bounded selection", async () => {
