@@ -1,13 +1,15 @@
 import { eq } from "drizzle-orm";
-import { dailyRuns, productSources, products } from "@/db/schema";
+import { dailyRuns, productEvidence, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { identityForCandidate, prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
 import {
   candidateShortlist,
+  coldStartEvidenceConfidence,
   MAX_DAILY_FEED,
   type ScoredCandidateGroup,
 } from "@/lib/daily-ranking";
 import type { SourceCandidate, SourceKey } from "@/lib/domain";
+import { enrichOfficialEvidence, fetchBoundedOfficialEvidence, renderEvidenceBackedRankingReason, type EvidenceRecord } from "@/lib/evidence";
 import { rankDailyCandidateIds } from "@/lib/llm-ranking";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
@@ -37,6 +39,7 @@ export type DailyFeedPersistence = {
   startRun: (input: { localDate: string; startedAt: Date }) => Promise<void>;
   /** Persist every eligible source mention before ranking, keyed by group identity. */
   persistCandidates: (groups: CandidateGroup[]) => Promise<Map<string, string>>;
+  persistEvidence: (records: Map<string, EvidenceRecord>, productIds: Map<string, string>) => Promise<void>;
   setDailyRanks: (entries: { identity: string; rank: number }[], productIds: Map<string, string>) => Promise<void>;
   completeRun: (input: { localDate: string; sourceResults: Record<string, SourceResult>; finishedAt: Date }) => Promise<void>;
   failRun: (input: { localDate: string; error: string; finishedAt: Date }) => Promise<void>;
@@ -46,6 +49,7 @@ export type DailyFeedDependencies = {
   now: () => Date;
   collect: (since: Date) => Promise<DailyCollectionResult[]>;
   persistence: DailyFeedPersistence;
+  enrichEvidence?: (groups: CandidateGroup[]) => Promise<Map<string, EvidenceRecord>>;
   /** Return only supplied shortlist identities, in desired feed order. */
   rank: (shortlist: ScoredCandidateGroup[]) => Promise<readonly string[]>;
 };
@@ -99,6 +103,38 @@ function fallbackOrder(shortlist: ScoredCandidateGroup[]) {
   return shortlist.slice(0, MAX_DAILY_FEED);
 }
 
+function evidenceConfidenceValue(record: EvidenceRecord | undefined) {
+  if (!record) return undefined;
+  return record.confidence === "high" ? 1 : record.confidence === "medium" ? 0.6 : 0.25;
+}
+
+function officialGitHubRepository(group: CandidateGroup) {
+  for (const candidate of group.items) for (const url of [candidate.websiteUrl, candidate.sourceUrl]) {
+    try {
+      const parsed = new URL(url || "");
+      if (parsed.protocol === "https:" && parsed.hostname === "github.com") return parsed.toString();
+    } catch {
+      // Candidate URLs remain untrusted source data.
+    }
+  }
+  return undefined;
+}
+
+async function enrichProductionEvidence(groups: CandidateGroup[]) {
+  const records = await Promise.all(groups.map(async (group) => {
+    const best = group.items.find((candidate) => candidate.websiteUrl) || group.items[0]!;
+    const record = await enrichOfficialEvidence({
+      name: best.name,
+      canonicalUrl: best.websiteUrl,
+      githubRepositoryUrl: officialGitHubRepository(group),
+      metadata: best.metadata,
+      metadataProvenance: "source",
+    }, fetchBoundedOfficialEvidence);
+    return [group.identity, record] as const;
+  }));
+  return new Map(records);
+}
+
 /**
  * The Daily Feed's one high-level orchestration seam. Collection, persistence,
  * ranking, and time are injected so fixture tests never need live services.
@@ -135,7 +171,17 @@ export async function runDailyFeed(
     // This deliberately precedes shortlist construction and provider ranking:
     // unselected eligible products and mentions remain part of the archive.
     const productIds = await dependencies.persistence.persistCandidates(groups);
-    const shortlist = candidateShortlist(groups, { now: startedAt });
+    let evidence = new Map<string, EvidenceRecord>();
+    try {
+      evidence = dependencies.enrichEvidence ? await dependencies.enrichEvidence(groups) : await enrichProductionEvidence(groups);
+    } catch {
+      // Retrieval is optional evidence improvement; score conservatively if it fails.
+    }
+    await dependencies.persistence.persistEvidence(evidence, productIds);
+    const shortlist = candidateShortlist(groups, {
+      now: startedAt,
+      evidenceConfidence: (group) => evidenceConfidenceValue(evidence.get(group.identity)) ?? coldStartEvidenceConfidence(group),
+    });
     let selected: ScoredCandidateGroup[];
     let ranking: DailyFeedResult["ranking"] = "provider";
     try {
@@ -271,6 +317,40 @@ function productionPersistence(): DailyFeedPersistence {
         }
       }
       return ids;
+    },
+    persistEvidence: async (records, productIds) => {
+      const refreshedAt = new Date();
+      for (const [identity, record] of records) {
+        const productId = productIds.get(identity);
+        if (!productId) continue;
+        await db.insert(productEvidence).values({
+          productId,
+          factualSummary: record.factualSummary,
+          primaryUseCase: record.primaryUseCase,
+          audience: record.audience,
+          productType: record.productType,
+          officialEvidenceUrl: record.officialEvidenceUrl,
+          supportingExcerpts: record.supportingExcerpts,
+          confidence: record.confidence,
+          conflicts: record.conflicts,
+          rankingReason: renderEvidenceBackedRankingReason(record),
+          refreshedAt,
+        }).onConflictDoUpdate({
+          target: productEvidence.productId,
+          set: {
+            factualSummary: record.factualSummary,
+            primaryUseCase: record.primaryUseCase,
+            audience: record.audience,
+            productType: record.productType,
+            officialEvidenceUrl: record.officialEvidenceUrl,
+            supportingExcerpts: record.supportingExcerpts,
+            confidence: record.confidence,
+            conflicts: record.conflicts,
+            rankingReason: renderEvidenceBackedRankingReason(record),
+            refreshedAt,
+          },
+        });
+      }
     },
     setDailyRanks: async (entries, productIds) => {
       for (const entry of entries) {

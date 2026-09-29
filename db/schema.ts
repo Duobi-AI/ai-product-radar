@@ -113,6 +113,25 @@ export const productSources = pgTable(
   ],
 );
 
+export const productEvidence = pgTable(
+  "product_evidence",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id").notNull().unique().references(() => products.id, { onDelete: "cascade" }),
+    factualSummary: text("factual_summary"),
+    primaryUseCase: text("primary_use_case"),
+    audience: text("audience"),
+    productType: text("product_type"),
+    officialEvidenceUrl: text("official_evidence_url"),
+    supportingExcerpts: jsonb("supporting_excerpts").$type<string[]>().notNull().default([]),
+    confidence: text("confidence").notNull(),
+    conflicts: jsonb("conflicts").$type<string[]>().notNull().default([]),
+    rankingReason: text("ranking_reason"),
+    refreshedAt: timestamp("refreshed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("product_evidence_refreshed_idx").on(table.refreshedAt)],
+);
+
 export const feedback = pgTable(
   "feedback",
   {

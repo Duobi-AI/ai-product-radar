@@ -25,7 +25,36 @@ export type OfficialEvidenceInput = {
   canonicalUrl?: string | null;
   githubRepositoryUrl?: string | null;
   metadata?: Record<string, unknown>;
+  metadataProvenance?: "official" | "source";
 };
+
+export async function fetchBoundedOfficialEvidence(request: OfficialEvidenceRequest): Promise<string | null> {
+  const response = await fetch(request.url, {
+    redirect: "error",
+    signal: AbortSignal.timeout(5_000),
+    headers: { Accept: "text/html, text/plain, text/markdown;q=0.9" },
+  });
+  if (!response.ok) return null;
+  const length = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(length) && length > MAX_OFFICIAL_DOCUMENT_CHARS) return null;
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > MAX_OFFICIAL_DOCUMENT_CHARS) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(decoder.decode(value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
+}
 
 type EvidenceField = "factualSummary" | "primaryUseCase" | "audience" | "productType";
 type EvidenceValues = Record<EvidenceField, string | null>;
@@ -118,8 +147,14 @@ export async function enrichOfficialEvidence(input: OfficialEvidenceInput, fetch
   const readmeUrl = githubReadmeUrl(input.githubRepositoryUrl);
   if (readmeUrl) requests.push({ kind: "github_readme", url: readmeUrl });
 
-  const documents = await Promise.all(requests.map(async (request) => ({ request, body: await fetchOfficialEvidence(request) })));
-  const sources = [valuesFromMetadata(input.metadata), ...documents.filter((document) => document.body).map((document) => valuesFromDocument(document.body!))];
+  const documents = await Promise.all(requests.map(async (request) => ({
+    request,
+    body: await fetchOfficialEvidence(request).catch(() => null),
+  })));
+  // Source-collector metadata can guide whether enrichment is needed, but it
+  // must not become an "official" claim or public rationale on its own.
+  const metadata = input.metadataProvenance === "official" ? [valuesFromMetadata(input.metadata)] : [];
+  const sources = [...metadata, ...documents.filter((document) => document.body).map((document) => valuesFromDocument(document.body!))];
   const { evidence, conflicts } = combineEvidence(sources);
   const excerpts = documents.flatMap((document) => document.body ? [cleanText(document.body.slice(0, 280))] : []).filter(Boolean).slice(0, 2);
 

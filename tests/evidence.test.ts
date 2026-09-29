@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   enrichOfficialEvidence,
+  fetchBoundedOfficialEvidence,
   renderEvidenceBackedRankingReason,
   type OfficialEvidenceRequest,
 } from "../lib/evidence";
@@ -65,6 +66,31 @@ test("incomplete official evidence remains usable but has low confidence", async
   assert.equal(evidence.primaryUseCase, null);
   assert.equal(evidence.confidence, "low");
   assert.equal(renderEvidenceBackedRankingReason(evidence), null);
+});
+
+test("source metadata cannot become an official claim or public reason", async () => {
+  const evidence = await enrichOfficialEvidence(
+    {
+      name: "Scout",
+      metadata: { description: "A source collector's unverified claim.", primaryUseCase: "anything" },
+      metadataProvenance: "source",
+    },
+    async () => null,
+  );
+
+  assert.equal(evidence.factualSummary, null);
+  assert.equal(evidence.confidence, "low");
+  assert.equal(renderEvidenceBackedRankingReason(evidence), null);
+});
+
+test("bounded retrieval cancels an oversized response without a content-length header", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("x".repeat(24_001));
+  try {
+    assert.equal(await fetchBoundedOfficialEvidence({ kind: "canonical_page", url: "https://example.com" }), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("conflicting official claims are omitted and degrade confidence", async () => {

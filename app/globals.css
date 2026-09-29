@@ -51,3 +51,4 @@
 .category-tag{font-size:10px;font-weight:600;color:var(--green-text);background:var(--surface-selected);border:1px solid var(--line-selected);border-radius:999px;padding:5px 9px}
 .source-list a{font-size:10px;color:var(--text-muted)}
 @media(prefers-reduced-motion:reduce){.product-card,.product-card:hover,.product-card:focus-within{transition:none;transform:none}}
+.ranking-reason{font-size:10px;line-height:1.45;color:var(--text-muted);margin:-7px 0 15px}
