@@ -73,10 +73,12 @@ export type SelectionSnapshot = {
   productId: string;
   selectedAt: Date;
   rank: number;
+  freshness: number;
+  evidenceConfidence: number;
   deterministicScore: number;
   sourceRelativeTraction: number;
   acceptedEvidence: Record<string, unknown>;
-  rankingReason: string;
+  rankingReason: string | null;
   rediscovery: boolean;
   provenance: "model" | "fallback";
 };

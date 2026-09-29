@@ -82,6 +82,8 @@ test("selection snapshots are immutable and expire after one year", async () => 
     productId: "product-a",
     selectedAt,
     rank: 1,
+    freshness: 0.9,
+    evidenceConfidence: 0.8,
     deterministicScore: 0.91,
     sourceRelativeTraction: 0.8,
     acceptedEvidence: { summary: "Official fact" },

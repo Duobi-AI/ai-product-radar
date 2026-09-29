@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import { dailyRuns, productEvidence, productSources, products } from "@/db/schema";
+import { eq, lt } from "drizzle-orm";
+import { dailyRuns, productEvidence, productSources, products, selectionSnapshots } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { identityForCandidate, prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
 import {
@@ -15,6 +15,7 @@ import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
 import { collectProductHunt } from "@/lib/sources/product-hunt";
+import { SELECTION_SNAPSHOT_RETENTION_DAYS, type SelectionSnapshot } from "@/lib/selection-snapshots";
 
 const SOURCE_COLLECTORS = [
   ["product_hunt", collectProductHunt],
@@ -40,6 +41,7 @@ export type DailyFeedPersistence = {
   /** Persist every eligible source mention before ranking, keyed by group identity. */
   persistCandidates: (groups: CandidateGroup[]) => Promise<Map<string, string>>;
   persistEvidence: (records: Map<string, EvidenceRecord>, productIds: Map<string, string>) => Promise<void>;
+  persistSelectionSnapshots: (records: SelectionSnapshot[]) => Promise<void>;
   setDailyRanks: (entries: { identity: string; rank: number }[], productIds: Map<string, string>) => Promise<void>;
   completeRun: (input: { localDate: string; sourceResults: Record<string, SourceResult>; finishedAt: Date }) => Promise<void>;
   failRun: (input: { localDate: string; error: string; finishedAt: Date }) => Promise<void>;
@@ -202,6 +204,25 @@ export async function runDailyFeed(
       selected.map((group, index) => ({ identity: group.identity, rank: index + 1 })),
       productIds,
     );
+    const snapshots = selected.flatMap((group, index) => {
+      const productId = productIds.get(group.identity);
+      if (!productId) return [];
+      const evidenceRecord = evidence.get(group.identity);
+      return [{
+        productId,
+        selectedAt: startedAt,
+        rank: index + 1,
+        freshness: group.score.freshness,
+        evidenceConfidence: group.score.evidenceConfidence,
+        sourceRelativeTraction: group.score.sourceRelativeTraction,
+        deterministicScore: group.score.preScore,
+        acceptedEvidence: evidenceRecord ? structuredClone(evidenceRecord) as Record<string, unknown> : {},
+        rankingReason: evidenceRecord ? renderEvidenceBackedRankingReason(evidenceRecord) : null,
+        rediscovery: false,
+        provenance: ranking === "provider" ? "model" as const : "fallback" as const,
+      }];
+    });
+    await dependencies.persistence.persistSelectionSnapshots(snapshots);
     const sourceResults = Object.fromEntries(
       collectionResults.map((result) => [
         result.key,
@@ -352,6 +373,22 @@ function productionPersistence(): DailyFeedPersistence {
         });
       }
     },
+    persistSelectionSnapshots: async (records) => {
+      if (!records.length) return;
+      await db.insert(selectionSnapshots).values(records.map((record) => ({
+        productId: record.productId,
+        selectedAt: record.selectedAt,
+        rank: record.rank,
+        freshness: record.freshness,
+        evidenceConfidence: record.evidenceConfidence,
+        sourceRelativeTraction: record.sourceRelativeTraction,
+        deterministicScore: record.deterministicScore,
+        acceptedEvidence: record.acceptedEvidence,
+        rankingReason: record.rankingReason,
+        rediscovery: record.rediscovery,
+        provenance: record.provenance,
+      })));
+    },
     setDailyRanks: async (entries, productIds) => {
       for (const entry of entries) {
         const productId = productIds.get(entry.identity);
@@ -381,6 +418,15 @@ async function collectProductionSources(since: Date): Promise<DailyCollectionRes
       }
     }),
   );
+}
+
+/** Intended for the scheduled maintenance path; snapshots are append-only until expiry. */
+export async function cleanupExpiredSelectionSnapshots(now = new Date()) {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_URL is not configured");
+  const cutoff = new Date(now.getTime() - SELECTION_SNAPSHOT_RETENTION_DAYS * 86_400_000);
+  const deleted = await db.delete(selectionSnapshots).where(lt(selectionSnapshots.selectedAt, cutoff)).returning({ id: selectionSnapshots.id });
+  return deleted.length;
 }
 
 export async function runDailyIngestion(options: { force?: boolean } = {}) {
