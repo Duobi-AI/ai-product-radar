@@ -12,7 +12,13 @@ function cacheKey(prefix: string, value: unknown) {
   return prefix + ":" + createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-async function requestRanking(key: string, prompt: string, allowedIds: string[], limit: number) {
+async function requestRanking(
+  key: string,
+  prompt: string,
+  allowedIds: string[],
+  limit: number,
+  outputMode: "sanitize" | "raw" = "sanitize",
+) {
   const cached = rankingCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.productIds;
   const { output } = await generateText({
@@ -23,7 +29,9 @@ async function requestRanking(key: string, prompt: string, allowedIds: string[],
     maxOutputTokens: 1200,
   });
   const eligible = new Set(allowedIds);
-  const ordered = [...new Set(output.productIds)].filter((id) => eligible.has(id)).slice(0, limit);
+  const ordered = outputMode === "raw"
+    ? output.productIds
+    : [...new Set(output.productIds)].filter((id) => eligible.has(id)).slice(0, limit);
   rankingCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, productIds: ordered });
   if (rankingCache.size > 200) {
     const now = Date.now();
@@ -33,8 +41,8 @@ async function requestRanking(key: string, prompt: string, allowedIds: string[],
   return ordered;
 }
 
-export async function rankDailyCandidates(groups: CandidateGroup[]) {
-  if (groups.length <= 1) return groups;
+export async function rankDailyCandidateIds(groups: CandidateGroup[]) {
+  if (groups.length <= 1) return groups.map((group) => group.identity);
   const candidates = groups.map((group) => {
     const best = [...group.items].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     return {
@@ -53,7 +61,14 @@ export async function rankDailyCandidates(groups: CandidateGroup[]) {
     `Select and rank up to 30 of these eligible early-stage AI products for today's personal discovery feed. Return up to 30 IDs, best first. Use recency, evidence of real product activity, early-stage status, differentiation, and credible community interest. Evaluate Product Hunt candidates alongside all other sources; do not apply a fixed per-source quota or cap. Rank products on their merits and use source diversity as a tiebreaker. Avoid established general-purpose products and weak/ambiguous matches.\n\nCandidates:\n${JSON.stringify(candidates)}`,
     groups.map((group) => group.identity),
     30,
+    "raw",
   );
+  return ids;
+}
+
+export async function rankDailyCandidates(groups: CandidateGroup[]) {
+  const ids = await rankDailyCandidateIds(groups);
+  if (groups.length <= 1) return groups;
   const byId = new Map(groups.map((group) => [group.identity, group]));
   return ids.map((id) => byId.get(id)!).filter(Boolean);
 }
