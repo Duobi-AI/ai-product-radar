@@ -7,14 +7,15 @@ export function identityForCandidate(candidate: SourceCandidate): string {
   return identityFor(candidate.name, candidate.source === "product_hunt" ? null : candidate.websiteUrl);
 }
 
-export function prepareDailyCandidates(candidates: SourceCandidate[]): CandidateGroup[] {
+export function prepareDailyCandidates(candidates: SourceCandidate[], options: { now?: Date } = {}): CandidateGroup[] {
+  const now = options.now || new Date();
   const groups = new Map<string, SourceCandidate[]>();
   for (const candidate of candidates) {
     const name = candidate.name.trim();
     const description = candidate.description.trim();
     const date = candidate.announcedAt?.getTime();
     const text = [name, description, JSON.stringify(candidate.metadata || {})].join(" ");
-    if (name.length < 3 || !isAiRelated(text) || (!description && !candidate.websiteUrl) || (date && date > Date.now() + 24 * 60 * 60 * 1000)) continue;
+    if (name.length < 3 || !isAiRelated(text) || (!description && !candidate.websiteUrl) || (date && date > now.getTime() + 24 * 60 * 60 * 1000)) continue;
     const identity = identityForCandidate(candidate);
     const group = groups.get(identity) || [];
     group.push(candidate);

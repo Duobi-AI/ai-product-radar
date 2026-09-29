@@ -1,13 +1,18 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { dailyRuns, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { identityForCandidate, prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
+import {
+  candidateShortlist,
+  MAX_DAILY_FEED,
+  type ScoredCandidateGroup,
+} from "@/lib/daily-ranking";
+import type { SourceCandidate, SourceKey } from "@/lib/domain";
+import { rankDailyCandidateIds } from "@/lib/llm-ranking";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
 import { collectProductHunt } from "@/lib/sources/product-hunt";
-import type { SourceCandidate } from "@/lib/domain";
-import { rankDailyCandidates } from "@/lib/llm-ranking";
 
 const SOURCE_COLLECTORS = [
   ["product_hunt", collectProductHunt],
@@ -16,7 +21,45 @@ const SOURCE_COLLECTORS = [
   ["hugging_face", collectHuggingFace],
 ] as const;
 
-export const MAX_DAILY_PRODUCTS = 30;
+export { MAX_DAILY_FEED } from "@/lib/daily-ranking";
+
+type SourceResult = { found: number; selected: number; error: string | null };
+export type DailyRunStatus = "running" | "complete" | "failed";
+
+export type DailyCollectionResult = {
+  key: SourceKey;
+  candidates: SourceCandidate[];
+  error: string | null;
+};
+
+export type DailyFeedPersistence = {
+  getRun: (localDate: string) => Promise<{ status: DailyRunStatus } | null>;
+  startRun: (input: { localDate: string; startedAt: Date }) => Promise<void>;
+  /** Persist every eligible source mention before ranking, keyed by group identity. */
+  persistCandidates: (groups: CandidateGroup[]) => Promise<Map<string, string>>;
+  setDailyRanks: (entries: { identity: string; rank: number }[], productIds: Map<string, string>) => Promise<void>;
+  completeRun: (input: { localDate: string; sourceResults: Record<string, SourceResult>; finishedAt: Date }) => Promise<void>;
+  failRun: (input: { localDate: string; error: string; finishedAt: Date }) => Promise<void>;
+};
+
+export type DailyFeedDependencies = {
+  now: () => Date;
+  collect: (since: Date) => Promise<DailyCollectionResult[]>;
+  persistence: DailyFeedPersistence;
+  /** Return only supplied shortlist identities, in desired feed order. */
+  rank: (shortlist: ScoredCandidateGroup[]) => Promise<readonly string[]>;
+};
+
+export type DailyFeedResult = {
+  localDate: string;
+  status: "complete" | "already_complete";
+  candidates: number;
+  selectedProducts: number;
+  saved: number;
+  sources: Record<string, SourceResult>;
+  selected: ScoredCandidateGroup[];
+  ranking: "provider" | "fallback";
+};
 
 function pacificDate(date: Date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -36,6 +79,111 @@ export function isPacificNoonWindow(date = new Date()) {
     hourCycle: "h23",
   }).formatToParts(date);
   return Number(parts.find((part) => part.type === "hour")?.value) === 12;
+}
+
+function validateRanking(ids: readonly string[], allowed: Set<string>) {
+  if (!ids.length || ids.length > MAX_DAILY_FEED) return null;
+  const unique = new Set<string>();
+  for (const id of ids) {
+    if (typeof id !== "string" || !allowed.has(id) || unique.has(id)) return null;
+    unique.add(id);
+  }
+  return [...unique];
+}
+
+function isDailyRunStatus(status: string): status is DailyRunStatus {
+  return status === "running" || status === "complete" || status === "failed";
+}
+
+function fallbackOrder(shortlist: ScoredCandidateGroup[]) {
+  return shortlist.slice(0, MAX_DAILY_FEED);
+}
+
+/**
+ * The Daily Feed's one high-level orchestration seam. Collection, persistence,
+ * ranking, and time are injected so fixture tests never need live services.
+ */
+export async function runDailyFeed(
+  dependencies: DailyFeedDependencies,
+  options: { force?: boolean } = {},
+): Promise<DailyFeedResult> {
+  const startedAt = dependencies.now();
+  const localDate = pacificDate(startedAt);
+  const existingRun = await dependencies.persistence.getRun(localDate);
+  if (existingRun?.status === "complete" && !options.force) {
+    return {
+      localDate,
+      status: "already_complete",
+      candidates: 0,
+      selectedProducts: 0,
+      saved: 0,
+      sources: {},
+      selected: [],
+      ranking: "fallback",
+    };
+  }
+
+  await dependencies.persistence.startRun({ localDate, startedAt });
+  try {
+    const since = existingRun
+      ? new Date(startedAt.getTime() - 2 * 86_400_000)
+      : new Date(startedAt.getTime() - 8 * 86_400_000);
+    const collectionResults = await dependencies.collect(since);
+    const candidates = collectionResults.flatMap((result) => result.candidates);
+    const groups = prepareDailyCandidates(candidates, { now: startedAt });
+
+    // This deliberately precedes shortlist construction and provider ranking:
+    // unselected eligible products and mentions remain part of the archive.
+    const productIds = await dependencies.persistence.persistCandidates(groups);
+    const shortlist = candidateShortlist(groups, { now: startedAt });
+    let selected: ScoredCandidateGroup[];
+    let ranking: DailyFeedResult["ranking"] = "provider";
+    try {
+      const rankedIds = validateRanking(await dependencies.rank(shortlist), new Set(shortlist.map((group) => group.identity)));
+      if (!rankedIds) throw new Error("Ranking output did not contain unique shortlist identities");
+      const byIdentity = new Map(shortlist.map((group) => [group.identity, group]));
+      const modelOrder = rankedIds.map((id) => byIdentity.get(id)!);
+      const remaining = shortlist.filter((group) => !rankedIds.includes(group.identity));
+      selected = [...modelOrder, ...remaining].slice(0, MAX_DAILY_FEED);
+    } catch {
+      // Ranking is optional refinement; a provider error or invalid response
+      // must never turn a successfully collected run into a failed one.
+      ranking = "fallback";
+      selected = fallbackOrder(shortlist);
+    }
+
+    await dependencies.persistence.setDailyRanks(
+      selected.map((group, index) => ({ identity: group.identity, rank: index + 1 })),
+      productIds,
+    );
+    const sourceResults = Object.fromEntries(
+      collectionResults.map((result) => [
+        result.key,
+        {
+          found: result.candidates.length,
+          selected: selected.flatMap((group) => group.items).filter((candidate) => candidate.source === result.key).length,
+          error: result.error,
+        },
+      ]),
+    );
+    const finishedAt = dependencies.now();
+    await dependencies.persistence.completeRun({ localDate, sourceResults, finishedAt });
+
+    return {
+      localDate,
+      status: "complete",
+      candidates: candidates.length,
+      selectedProducts: selected.length,
+      saved: groups.reduce((total, group) => total + group.items.length, 0),
+      sources: sourceResults,
+      selected,
+      ranking,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Daily collection failed";
+    await dependencies.persistence.failRun({ localDate, error: message, finishedAt: dependencies.now() });
+    throw error;
+  }
 }
 
 async function storeCandidate(candidate: SourceCandidate) {
@@ -72,7 +220,6 @@ async function storeCandidate(candidate: SourceCandidate) {
       },
     })
     .returning({ id: products.id });
-
   if (!product) return null;
   await db
     .insert(productSources)
@@ -100,92 +247,67 @@ async function storeCandidate(candidate: SourceCandidate) {
   return product.id;
 }
 
-export async function runDailyIngestion(options: { force?: boolean } = {}) {
+function productionPersistence(): DailyFeedPersistence {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL is not configured");
+  return {
+    getRun: async (localDate) => {
+      const [run] = await db.select({ status: dailyRuns.status }).from(dailyRuns).where(eq(dailyRuns.localDate, localDate)).limit(1);
+      return run && isDailyRunStatus(run.status) ? { status: run.status } : null;
+    },
+    startRun: async ({ localDate, startedAt }) => {
+      await db.insert(dailyRuns).values({ localDate, status: "running", startedAt }).onConflictDoUpdate({
+        target: dailyRuns.localDate,
+        set: { status: "running", startedAt, finishedAt: null, sourceResults: {} },
+      });
+    },
+    persistCandidates: async (groups) => {
+      const ids = new Map<string, string>();
+      for (const group of groups) {
+        for (const candidate of group.items) {
+          const id = await storeCandidate(candidate);
+          if (!id) throw new Error(`Could not persist ${candidate.source} item ${candidate.externalId}`);
+          ids.set(group.identity, id);
+        }
+      }
+      return ids;
+    },
+    setDailyRanks: async (entries, productIds) => {
+      for (const entry of entries) {
+        const productId = productIds.get(entry.identity);
+        if (productId) await db.update(products).set({ dailyRank: entry.rank }).where(eq(products.id, productId));
+      }
+    },
+    completeRun: async ({ localDate, sourceResults, finishedAt }) => {
+      await db.update(dailyRuns).set({ status: "complete", sourceResults, finishedAt }).where(eq(dailyRuns.localDate, localDate));
+    },
+    failRun: async ({ localDate, error, finishedAt }) => {
+      await db.update(dailyRuns).set({ status: "failed", sourceResults: { error }, finishedAt }).where(eq(dailyRuns.localDate, localDate));
+    },
+  };
+}
 
-  const now = new Date();
-  const localDate = pacificDate(now);
-  const [existingRun] = await db
-    .select({ status: dailyRuns.status })
-    .from(dailyRuns)
-    .where(eq(dailyRuns.localDate, localDate))
-    .limit(1);
-  if (existingRun?.status === "complete" && !options.force) {
-    return { localDate, status: "already_complete", candidates: 0, selectedProducts: 0, saved: 0, sources: {} };
-  }
-
-  await db
-    .insert(dailyRuns)
-    .values({ localDate, status: "running", startedAt: now })
-    .onConflictDoUpdate({
-      target: dailyRuns.localDate,
-      set: { status: "running", startedAt: now, finishedAt: null, sourceResults: {} },
-    });
-
-  const since = existingRun ? new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000) : new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
-  const collectionResults = await Promise.all(
+async function collectProductionSources(since: Date): Promise<DailyCollectionResult[]> {
+  return Promise.all(
     SOURCE_COLLECTORS.map(async ([key, collect]) => {
       try {
-        const candidates = await collect(since);
-        return { key, candidates, error: null as string | null };
+        return { key, candidates: await collect(since), error: null };
       } catch (error) {
         return {
           key,
-          candidates: [] as SourceCandidate[],
+          candidates: [],
           error: error instanceof Error ? error.message : "Source collection failed",
         };
       }
     }),
   );
+}
 
-  const candidates = collectionResults.flatMap((result) => result.candidates);
-  let selectedProducts: CandidateGroup[];
-  try {
-    selectedProducts = (await rankDailyCandidates(prepareDailyCandidates(candidates))).slice(0, MAX_DAILY_PRODUCTS);
-  } catch (error) {
-    await db.update(dailyRuns)
-      .set({ status: "failed", sourceResults: { rankingError: error instanceof Error ? error.message : "LLM ranking failed" }, finishedAt: new Date() })
-      .where(eq(dailyRuns.localDate, localDate));
-    throw new Error(`LLM ranking failed: ${error instanceof Error ? error.message : "AI Gateway request failed"}`);
-  }
-  const selectedCandidates = selectedProducts.flatMap((product) => product.items);
-  let saved = 0;
-  const productRank = new Map<string, number>();
-  for (const [index, group] of selectedProducts.entries()) {
-    for (const candidate of group.items) {
-      try {
-        const productId = await storeCandidate(candidate);
-        if (productId) productRank.set(productId, index + 1);
-        saved += 1;
-      } catch (error) {
-        throw new Error(`Could not save ${candidate.source} item ${candidate.externalId}: ${error instanceof Error ? error.message : "database write failed"}`);
-      }
-    }
-  }
-  if (productRank.size) {
-    await db.update(products).set({ dailyRank: null }).where(inArray(products.id, [...productRank.keys()]));
-    for (const [id, rank] of productRank) await db.update(products).set({ dailyRank: rank }).where(eq(products.id, id));
-  }
-
-  const sourceResults = Object.fromEntries(
-    collectionResults.map((result) => [
-      result.key,
-      {
-        found: result.candidates.length,
-        selected: selectedCandidates.filter((candidate) => candidate.source === result.key).length,
-        error: result.error,
-      },
-    ]),
-  );
-  await db
-    .update(dailyRuns)
-    .set({
-      status: "complete",
-      sourceResults,
-      finishedAt: new Date(),
-    })
-    .where(eq(dailyRuns.localDate, localDate));
-
-  return { localDate, status: "complete", candidates: candidates.length, selectedProducts: selectedProducts.length, saved, sources: sourceResults };
+export async function runDailyIngestion(options: { force?: boolean } = {}) {
+  return runDailyFeed({
+    now: () => new Date(),
+    collect: collectProductionSources,
+    persistence: productionPersistence(),
+    rank: rankDailyCandidateIds,
+  }, options);
 }
