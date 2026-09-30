@@ -152,6 +152,37 @@ test("Daily Feed persists official evidence and scores its confidence before ran
   assert.equal(snapshot?.provenance, "model");
 });
 
+test("final ranking receives only the scored shortlist and its factual Evidence Records", async () => {
+  const fake = fakePersistence();
+  const evidenceRecord: EvidenceRecord = {
+    factualSummary: "An AI research assistant for product teams.",
+    primaryUseCase: "research",
+    audience: "product teams",
+    productType: "assistant",
+    officialEvidenceUrl: "https://item-1.example.com",
+    supportingExcerpts: ["Officially described as a research assistant."],
+    confidence: "high",
+    conflicts: [],
+  };
+  let rankedEvidence: ReadonlyMap<string, EvidenceRecord> | undefined;
+  let rankedIdentities: string[] = [];
+
+  await runDailyFeed(dependencies({
+    candidates: [candidate(1), candidate(2)],
+    persistence: fake.persistence,
+    enrichEvidence: async () => new Map([["name:ai-item-1", evidenceRecord]]),
+    rank: async (groups, evidence) => {
+      rankedEvidence = evidence;
+      rankedIdentities = groups.map((group) => group.identity);
+      return groups.map((group) => group.identity);
+    },
+  }));
+
+  assert.deepEqual(rankedIdentities, ["name:ai-item-1", "name:ai-item-2"]);
+  assert.equal(rankedEvidence?.get("name:ai-item-1")?.factualSummary, evidenceRecord.factualSummary);
+  assert.equal(rankedEvidence?.has("name:unprovided-product"), false);
+});
+
 test("Daily Feed persists every eligible mention before bounded selection", async () => {
   const items = Array.from({ length: 110 }, (_, index) => candidate(index));
   const fake = fakePersistence();
@@ -182,7 +213,7 @@ test("Daily Feed completes with deterministic fallback after provider failure or
       throw new Error("provider unavailable");
     },
     async () => ["unknown-product"],
-    async () => ["name:ai-item-9", "name:ai-item-9"],
+    async () => [],
   ];
 
   for (const rank of providerFailures) {
@@ -194,6 +225,22 @@ test("Daily Feed completes with deterministic fallback after provider failure or
     assert.deepEqual(result.selected.map((group) => group.identity), ["name:ai-item-9", "name:ai-item-3", "name:ai-item-1"]);
     assert.ok(fake.completed);
   }
+});
+
+test("duplicate supplied IDs are de-duplicated and the remaining shortlist fills the feed", async () => {
+  const fake = fakePersistence();
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1), candidate(2), candidate(3)],
+    persistence: fake.persistence,
+    rank: async () => ["name:ai-item-3", "name:ai-item-3", "name:ai-item-1"],
+  }));
+
+  assert.equal(result.ranking, "provider");
+  assert.deepEqual(result.selected.map((group) => group.identity), [
+    "name:ai-item-3",
+    "name:ai-item-1",
+    "name:ai-item-2",
+  ]);
 });
 
 test("a qualified archive rediscovery is selected and recorded as a rediscovery", async () => {
@@ -429,6 +476,27 @@ test("Daily Feed skips model ranking and completes deterministically when the mo
   assert.deepEqual(result.selected.map((group) => group.identity), ["name:ai-item-2", "name:ai-item-1"]);
   assert.equal(budget.requests.length, 0);
   assert.ok(fake.completed);
+});
+
+test("a one-product feed completes deterministically without an unreserved provider request", async () => {
+  const fake = fakePersistence();
+  const budget = new InMemoryDiscoveryBudgetRepository();
+  let modelCalls = 0;
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1)],
+    persistence: fake.persistence,
+    discoveryBudget: budget,
+    rank: async (groups) => {
+      modelCalls += 1;
+      return groups.map((group) => group.identity);
+    },
+  }));
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.ranking, "fallback");
+  assert.equal(modelCalls, 0);
+  assert.equal(budget.requests.length, 0);
+  assert.equal(fake.snapshots[0]?.provenance, "fallback");
 });
 
 test("ranking budget uses the month in which its model request is reserved", async () => {
