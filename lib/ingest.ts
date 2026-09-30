@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import { dailyRuns, productEvidence, productSources, products } from "@/db/schema";
+import { eq, lt } from "drizzle-orm";
+import { dailyRuns, productEvidence, productSources, products, selectionSnapshots } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import { identityForCandidate, prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
 import {
@@ -9,12 +9,21 @@ import {
   type ScoredCandidateGroup,
 } from "@/lib/daily-ranking";
 import type { SourceCandidate, SourceKey } from "@/lib/domain";
-import { enrichOfficialEvidence, fetchBoundedOfficialEvidence, renderEvidenceBackedRankingReason, type EvidenceRecord } from "@/lib/evidence";
+import { enrichOfficialEvidence, fetchBoundedOfficialEvidence, hasRefreshableOfficialEvidence, renderEvidenceBackedRankingReason, type EvidenceRecord } from "@/lib/evidence";
 import { rankDailyCandidateIds } from "@/lib/llm-ranking";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
 import { collectProductHunt } from "@/lib/sources/product-hunt";
+import {
+  applyRediscoveryAndSoftDiversity,
+  hasRediscoveryCooldownElapsed,
+  MAX_DAILY_REDISCOVERIES,
+  qualifyRediscovery,
+  selectionSnapshotRetentionCutoff,
+  type RediscoveryCandidate,
+  type SelectionSnapshot,
+} from "@/lib/selection-snapshots";
 
 const SOURCE_COLLECTORS = [
   ["product_hunt", collectProductHunt],
@@ -22,6 +31,7 @@ const SOURCE_COLLECTORS = [
   ["github", collectGitHub],
   ["hugging_face", collectHuggingFace],
 ] as const;
+const SOURCE_KEYS = new Set<SourceKey>(SOURCE_COLLECTORS.map(([key]) => key));
 
 export { MAX_DAILY_FEED } from "@/lib/daily-ranking";
 
@@ -34,13 +44,23 @@ export type DailyCollectionResult = {
   error: string | null;
 };
 
+export type ArchiveRediscoveryCandidate = RediscoveryCandidate & {
+  group: CandidateGroup;
+  evidence?: EvidenceRecord | null;
+};
+
 export type DailyFeedPersistence = {
   getRun: (localDate: string) => Promise<{ status: DailyRunStatus } | null>;
   startRun: (input: { localDate: string; startedAt: Date }) => Promise<void>;
   /** Persist every eligible source mention before ranking, keyed by group identity. */
   persistCandidates: (groups: CandidateGroup[]) => Promise<Map<string, string>>;
-  persistEvidence: (records: Map<string, EvidenceRecord>, productIds: Map<string, string>) => Promise<void>;
-  setDailyRanks: (entries: { identity: string; rank: number }[], productIds: Map<string, string>) => Promise<void>;
+  persistEvidence: (records: Map<string, EvidenceRecord>, productIds: Map<string, string>, groups: CandidateGroup[], refreshedAt: Date) => Promise<void>;
+  persistDailySelection: (
+    entries: { identity: string; rank: number }[],
+    records: SelectionSnapshot[],
+    productIds: Map<string, string>,
+  ) => Promise<void>;
+  loadArchiveRediscoveries: () => Promise<ArchiveRediscoveryCandidate[]>;
   completeRun: (input: { localDate: string; sourceResults: Record<string, SourceResult>; finishedAt: Date }) => Promise<void>;
   failRun: (input: { localDate: string; error: string; finishedAt: Date }) => Promise<void>;
 };
@@ -108,6 +128,52 @@ function evidenceConfidenceValue(record: EvidenceRecord | undefined) {
   return record.confidence === "high" ? 1 : record.confidence === "medium" ? 0.6 : 0.25;
 }
 
+function evidenceRecordFromStored(record: typeof productEvidence.$inferSelect): EvidenceRecord {
+  const confidence = record.confidence === "high" || record.confidence === "medium" ? record.confidence : "low";
+  const conflicts = record.conflicts.filter((field): field is EvidenceRecord["conflicts"][number] =>
+    field === "factualSummary" || field === "primaryUseCase" || field === "audience" || field === "productType",
+  );
+  return {
+    factualSummary: record.factualSummary,
+    primaryUseCase: record.primaryUseCase,
+    audience: record.audience,
+    productType: record.productType,
+    officialEvidenceUrl: record.officialEvidenceUrl,
+    supportingExcerpts: record.supportingExcerpts,
+    confidence,
+    conflicts,
+  };
+}
+
+function incompleteEvidenceRecord(group: CandidateGroup): EvidenceRecord {
+  const canonicalUrl = group.items.find((candidate) => candidate.websiteUrl)?.websiteUrl || null;
+  return {
+    factualSummary: null,
+    primaryUseCase: null,
+    audience: null,
+    productType: null,
+    officialEvidenceUrl: canonicalUrl,
+    supportingExcerpts: [],
+    confidence: "low",
+    conflicts: [],
+  };
+}
+
+function rankingReasonFor(record: EvidenceRecord, group: CandidateGroup) {
+  return renderEvidenceBackedRankingReason(record, group.items.map((item) => item.sourceName));
+}
+
+function similarityTokensFor(record: EvidenceRecord | undefined, group: CandidateGroup) {
+  const text = [
+    ...group.items.flatMap((item) => [item.name, item.description]),
+    record?.productType,
+    record?.factualSummary,
+    record?.primaryUseCase,
+  ].filter((value): value is string => Boolean(value)).join(" ").toLowerCase();
+  const stopWords = new Set(["about", "and", "for", "from", "into", "its", "that", "the", "this", "with"]);
+  return [...new Set(text.match(/[a-z0-9]{2,}/g) ?? [])].filter((token) => !stopWords.has(token));
+}
+
 function officialGitHubRepository(group: CandidateGroup) {
   for (const candidate of group.items) for (const url of [candidate.websiteUrl, candidate.sourceUrl]) {
     try {
@@ -166,23 +232,61 @@ export async function runDailyFeed(
       : new Date(startedAt.getTime() - 8 * 86_400_000);
     const collectionResults = await dependencies.collect(since);
     const candidates = collectionResults.flatMap((result) => result.candidates);
-    const groups = prepareDailyCandidates(candidates, { now: startedAt });
+    const currentGroups = prepareDailyCandidates(candidates, { now: startedAt });
 
     // This deliberately precedes shortlist construction and provider ranking:
     // unselected eligible products and mentions remain part of the archive.
-    const productIds = await dependencies.persistence.persistCandidates(groups);
-    let evidence = new Map<string, EvidenceRecord>();
+    const productIds = await dependencies.persistence.persistCandidates(currentGroups);
+    const archiveCandidates = await dependencies.persistence.loadArchiveRediscoveries();
+    const previouslySelected = new Map(archiveCandidates.map((archive) => [archive.group.identity, archive]));
+    const cooldownReadyArchives = archiveCandidates
+      .filter((archive) => hasRediscoveryCooldownElapsed(archive.lastSelectedAt, startedAt))
+      .sort((left, right) => left.lastSelectedAt!.getTime() - right.lastSelectedAt!.getTime() || left.productId.localeCompare(right.productId))
+      .slice(0, MAX_DAILY_REDISCOVERIES);
+    const archiveRefreshIdentities = new Set(cooldownReadyArchives.map((archive) => archive.group.identity));
+    const groupsToEnrich = [
+      ...currentGroups.filter((group) => !previouslySelected.has(group.identity) || archiveRefreshIdentities.has(group.identity)),
+      ...cooldownReadyArchives.map((archive) => archive.group).filter((archive) => !currentGroups.some((group) => group.identity === archive.identity)),
+    ];
+    const evidence = new Map<string, EvidenceRecord>();
+    for (const archive of archiveCandidates) if (archive.evidence) evidence.set(archive.group.identity, archive.evidence);
+    const refreshedEvidenceByIdentity = new Map<string, EvidenceRecord>();
     try {
-      evidence = dependencies.enrichEvidence ? await dependencies.enrichEvidence(groups) : await enrichProductionEvidence(groups);
+      const refreshedEvidence = dependencies.enrichEvidence ? await dependencies.enrichEvidence(groupsToEnrich) : await enrichProductionEvidence(groupsToEnrich);
+      for (const [identity, record] of refreshedEvidence) {
+        if (!hasRefreshableOfficialEvidence(record)) continue;
+        evidence.set(identity, record);
+        refreshedEvidenceByIdentity.set(identity, record);
+      }
     } catch {
       // Retrieval is optional evidence improvement; score conservatively if it fails.
     }
-    await dependencies.persistence.persistEvidence(evidence, productIds);
+    for (const group of groupsToEnrich) if (!evidence.has(group.identity)) evidence.set(group.identity, incompleteEvidenceRecord(group));
+
+    const rediscoveryByIdentity = new Map<string, ArchiveRediscoveryCandidate>();
+    const rediscoveryReasonByIdentity = new Map<string, "refreshed_official_evidence" | "new_qualifying_product_mention">();
+    for (const archive of archiveCandidates) {
+      const refreshedEvidence = refreshedEvidenceByIdentity.get(archive.group.identity);
+      const candidate = {
+        ...archive,
+        evidenceRefreshedAt: refreshedEvidence && hasRefreshableOfficialEvidence(refreshedEvidence) ? startedAt : archive.evidenceRefreshedAt,
+      };
+      const qualification = qualifyRediscovery(candidate, startedAt);
+      if (!qualification.qualified) continue;
+      rediscoveryByIdentity.set(archive.group.identity, archive);
+      rediscoveryReasonByIdentity.set(archive.group.identity, qualification.reason);
+      productIds.set(archive.group.identity, archive.productId);
+    }
+    const groups = [...currentGroups.filter((group) => !previouslySelected.has(group.identity) || rediscoveryByIdentity.has(group.identity)), ...[...rediscoveryByIdentity.values()]
+      .map((archive) => archive.group)
+      .filter((archive) => !currentGroups.some((group) => group.identity === archive.identity))];
+    for (const group of groups) if (!evidence.has(group.identity)) evidence.set(group.identity, incompleteEvidenceRecord(group));
+    await dependencies.persistence.persistEvidence(refreshedEvidenceByIdentity, productIds, groupsToEnrich, startedAt);
     const shortlist = candidateShortlist(groups, {
       now: startedAt,
       evidenceConfidence: (group) => evidenceConfidenceValue(evidence.get(group.identity)) ?? coldStartEvidenceConfidence(group),
     });
-    let selected: ScoredCandidateGroup[];
+    let orderedCandidates: ScoredCandidateGroup[];
     let ranking: DailyFeedResult["ranking"] = "provider";
     try {
       const rankedIds = validateRanking(await dependencies.rank(shortlist), new Set(shortlist.map((group) => group.identity)));
@@ -190,16 +294,42 @@ export async function runDailyFeed(
       const byIdentity = new Map(shortlist.map((group) => [group.identity, group]));
       const modelOrder = rankedIds.map((id) => byIdentity.get(id)!);
       const remaining = shortlist.filter((group) => !rankedIds.includes(group.identity));
-      selected = [...modelOrder, ...remaining].slice(0, MAX_DAILY_FEED);
+      orderedCandidates = [...modelOrder, ...remaining];
     } catch {
       // Ranking is optional refinement; a provider error or invalid response
       // must never turn a successfully collected run into a failed one.
       ranking = "fallback";
-      selected = fallbackOrder(shortlist);
+      orderedCandidates = fallbackOrder(shortlist);
     }
+    const selected = applyRediscoveryAndSoftDiversity(orderedCandidates.map((group) => ({
+      productId: group.identity,
+      deterministicScore: group.score.preScore,
+      similarityTokens: similarityTokensFor(evidence.get(group.identity), group),
+      rediscovery: rediscoveryByIdentity.has(group.identity),
+    })), MAX_DAILY_FEED).map((candidate) => orderedCandidates.find((group) => group.identity === candidate.productId)!);
 
-    await dependencies.persistence.setDailyRanks(
+    const snapshots = selected.map((group, index) => {
+      const productId = productIds.get(group.identity);
+      if (!productId) throw new Error(`Could not persist selected product ${group.identity}`);
+      const evidenceRecord = evidence.get(group.identity);
+      return {
+        productId,
+        selectedAt: startedAt,
+        rank: index + 1,
+        freshness: group.score.freshness,
+        evidenceConfidence: group.score.evidenceConfidence,
+        sourceRelativeTraction: group.score.sourceRelativeTraction,
+        deterministicScore: group.score.preScore,
+        acceptedEvidence: evidenceRecord ? structuredClone(evidenceRecord) as Record<string, unknown> : {},
+        rankingReason: evidenceRecord ? rankingReasonFor(evidenceRecord, group) : null,
+        rediscovery: rediscoveryByIdentity.has(group.identity),
+        rediscoveryReason: rediscoveryReasonByIdentity.get(group.identity) ?? null,
+        provenance: ranking === "provider" ? "model" as const : "fallback" as const,
+      };
+    });
+    await dependencies.persistence.persistDailySelection(
       selected.map((group, index) => ({ identity: group.identity, rank: index + 1 })),
+      snapshots,
       productIds,
     );
     const sourceResults = Object.fromEntries(
@@ -287,7 +417,8 @@ async function storeCandidate(candidate: SourceCandidate) {
         sourceName: candidate.sourceName,
         score: candidate.score || 0,
         metadata: candidate.metadata || {},
-        seenAt: now,
+        // seenAt is the first observation of this distinct Product Mention.
+        // Refreshing the same source item must not qualify an archive rediscovery.
       },
     });
   return product.id;
@@ -318,9 +449,12 @@ function productionPersistence(): DailyFeedPersistence {
       }
       return ids;
     },
-    persistEvidence: async (records, productIds) => {
-      const refreshedAt = new Date();
+    persistEvidence: async (records, productIds, groups, refreshedAt) => {
+      const groupByIdentity = new Map(groups.map((group) => [group.identity, group]));
       for (const [identity, record] of records) {
+        // A synthesized incomplete record means retrieval failed or yielded no
+        // official material; keep any earlier official evidence and timestamp.
+        if (!hasRefreshableOfficialEvidence(record)) continue;
         const productId = productIds.get(identity);
         if (!productId) continue;
         await db.insert(productEvidence).values({
@@ -333,7 +467,7 @@ function productionPersistence(): DailyFeedPersistence {
           supportingExcerpts: record.supportingExcerpts,
           confidence: record.confidence,
           conflicts: record.conflicts,
-          rankingReason: renderEvidenceBackedRankingReason(record),
+          rankingReason: groupByIdentity.get(identity) ? rankingReasonFor(record, groupByIdentity.get(identity)!) : null,
           refreshedAt,
         }).onConflictDoUpdate({
           target: productEvidence.productId,
@@ -346,17 +480,82 @@ function productionPersistence(): DailyFeedPersistence {
             supportingExcerpts: record.supportingExcerpts,
             confidence: record.confidence,
             conflicts: record.conflicts,
-            rankingReason: renderEvidenceBackedRankingReason(record),
+            rankingReason: groupByIdentity.get(identity) ? rankingReasonFor(record, groupByIdentity.get(identity)!) : null,
             refreshedAt,
           },
         });
       }
     },
-    setDailyRanks: async (entries, productIds) => {
-      for (const entry of entries) {
+    persistDailySelection: async (entries, records, productIds) => {
+      const rankUpdates = entries.flatMap((entry) => {
         const productId = productIds.get(entry.identity);
-        if (productId) await db.update(products).set({ dailyRank: entry.rank }).where(eq(products.id, productId));
+        return productId ? [db.update(products).set({ dailyRank: entry.rank }).where(eq(products.id, productId))] : [];
+      });
+      const snapshotInsert = records.length ? [db.insert(selectionSnapshots).values(records.map((record) => ({
+        productId: record.productId,
+        selectedAt: record.selectedAt,
+        rank: record.rank,
+        freshness: record.freshness,
+        evidenceConfidence: record.evidenceConfidence,
+        sourceRelativeTraction: record.sourceRelativeTraction,
+        deterministicScore: record.deterministicScore,
+        acceptedEvidence: record.acceptedEvidence,
+        rankingReason: record.rankingReason,
+        rediscovery: record.rediscovery,
+        rediscoveryReason: record.rediscoveryReason,
+        provenance: record.provenance,
+      })))] : [];
+      const statements = [...snapshotInsert, ...rankUpdates];
+      if (statements.length) await db.batch(statements as [typeof statements[number], ...typeof statements[number][]]);
+    },
+    loadArchiveRediscoveries: async () => {
+      const [storedProducts, sources, evidenceRows, snapshots] = await Promise.all([
+        db.select().from(products),
+        db.select().from(productSources),
+        db.select().from(productEvidence),
+        db.select().from(selectionSnapshots),
+      ]);
+      const sourcesByProduct = new Map<string, typeof sources>();
+      for (const source of sources) {
+        const items = sourcesByProduct.get(source.productId) || [];
+        items.push(source);
+        sourcesByProduct.set(source.productId, items);
       }
+      const evidenceByProduct = new Map(evidenceRows.map((record) => [record.productId, record]));
+      const lastSnapshotByProduct = new Map<string, Date>();
+      for (const snapshot of snapshots) {
+        const previous = lastSnapshotByProduct.get(snapshot.productId);
+        if (!previous || snapshot.selectedAt > previous) lastSnapshotByProduct.set(snapshot.productId, snapshot.selectedAt);
+      }
+      return storedProducts.flatMap((product): ArchiveRediscoveryCandidate[] => {
+        const lastSelectedAt = lastSnapshotByProduct.get(product.id);
+        const mentions = sourcesByProduct.get(product.id) || [];
+        const items: SourceCandidate[] = mentions.flatMap((mention) => SOURCE_KEYS.has(mention.source as SourceKey) ? [{
+          source: mention.source as SourceKey,
+          externalId: mention.externalId,
+          sourceUrl: mention.sourceUrl,
+          sourceName: mention.sourceName,
+          name: product.name,
+          description: product.description,
+          websiteUrl: product.websiteUrl,
+          category: product.category,
+          stage: product.stage,
+          announcedAt: product.announcedAt,
+          score: mention.score,
+          metadata: mention.metadata,
+        }] : []);
+        if (!lastSelectedAt || !items.length) return [];
+        const latestQualifyingMentionAt = mentions.reduce<Date | null>((latest, mention) => !latest || mention.seenAt > latest ? mention.seenAt : latest, null);
+        const evidence = evidenceByProduct.get(product.id);
+        return [{
+          productId: product.id,
+          group: { identity: product.identityKey, items },
+          lastSelectedAt,
+          evidenceRefreshedAt: evidence?.refreshedAt || null,
+          latestQualifyingMentionAt,
+          evidence: evidence ? evidenceRecordFromStored(evidence) : null,
+        }];
+      });
     },
     completeRun: async ({ localDate, sourceResults, finishedAt }) => {
       await db.update(dailyRuns).set({ status: "complete", sourceResults, finishedAt }).where(eq(dailyRuns.localDate, localDate));
@@ -381,6 +580,15 @@ async function collectProductionSources(since: Date): Promise<DailyCollectionRes
       }
     }),
   );
+}
+
+/** Intended for the scheduled maintenance path; snapshots are append-only until expiry. */
+export async function cleanupExpiredSelectionSnapshots(now = new Date()) {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_URL is not configured");
+  const cutoff = selectionSnapshotRetentionCutoff(now);
+  const deleted = await db.delete(selectionSnapshots).where(lt(selectionSnapshots.selectedAt, cutoff)).returning({ id: selectionSnapshots.id });
+  return deleted.length;
 }
 
 export async function runDailyIngestion(options: { force?: boolean } = {}) {

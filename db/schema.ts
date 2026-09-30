@@ -132,6 +132,29 @@ export const productEvidence = pgTable(
   (table) => [index("product_evidence_refreshed_idx").on(table.refreshedAt)],
 );
 
+export const selectionSnapshots = pgTable(
+  "selection_snapshots",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    productId: uuid("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+    selectedAt: timestamp("selected_at", { withTimezone: true }).notNull(),
+    rank: integer("rank").notNull(),
+    freshness: real("freshness").notNull(),
+    evidenceConfidence: real("evidence_confidence").notNull(),
+    sourceRelativeTraction: real("source_relative_traction").notNull(),
+    deterministicScore: real("deterministic_score").notNull(),
+    acceptedEvidence: jsonb("accepted_evidence").$type<Record<string, unknown>>().notNull().default({}),
+    rankingReason: text("ranking_reason"),
+    rediscovery: boolean("rediscovery").notNull().default(false),
+    rediscoveryReason: text("rediscovery_reason"),
+    provenance: text("provenance").notNull(),
+  },
+  (table) => [
+    index("selection_snapshots_product_selected_idx").on(table.productId, table.selectedAt),
+    index("selection_snapshots_selected_idx").on(table.selectedAt),
+  ],
+);
+
 export const feedback = pgTable(
   "feedback",
   {

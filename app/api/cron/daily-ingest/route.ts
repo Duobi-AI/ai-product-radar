@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isPacificNoonWindow, runDailyIngestion } from "@/lib/ingest";
+import { cleanupExpiredSelectionSnapshots, isPacificNoonWindow, runDailyIngestion } from "@/lib/ingest";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -20,7 +20,9 @@ export async function GET(request: Request) {
   }
 
   try {
-    return NextResponse.json(await runDailyIngestion());
+    const result = await runDailyIngestion();
+    const expiredSnapshotsDeleted = await cleanupExpiredSelectionSnapshots();
+    return NextResponse.json({ ...result, expiredSnapshotsDeleted });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Daily collection failed" },
