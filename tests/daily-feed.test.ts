@@ -14,6 +14,7 @@ import type { SourceCandidate } from "../lib/domain";
 import type { SelectionSnapshot } from "../lib/selection-snapshots";
 import { enrichEvidenceWithDeepSeek, type EvidenceRecord } from "../lib/evidence";
 import { InMemoryDiscoveryBudgetRepository, type DiscoveryBudgetRepository } from "../lib/discovery-budget";
+import type { GlobalRankingReleaseDecision } from "../lib/global-ranking-evaluation";
 
 const NOW = new Date("2026-09-29T19:00:00.000Z");
 
@@ -95,16 +96,58 @@ function dependencies(input: {
   now?: DailyFeedDependencies["now"];
   enrichEvidence?: DailyFeedDependencies["enrichEvidence"];
   discoveryBudget?: DiscoveryBudgetRepository;
+  releaseDecision?: GlobalRankingReleaseDecision;
 }): DailyFeedDependencies {
   return {
     now: input.now || (() => NOW),
     collect: async () => [{ key: "product_hunt", candidates: input.candidates, error: null }],
     persistence: input.persistence,
+    releaseDecision: input.releaseDecision || {
+      enabled: true,
+      reason: "approved",
+      scorecardId: "reviewed-scorecard",
+      positiveCriteria: ["freshness", "credibility", "diversity", "explanationAccuracy"],
+      requiredPositiveCriteria: 4,
+      approval: { approvedBy: "test-product-owner", approvedAt: "2026-09-30T19:01:00.000Z" },
+    },
     rank: input.rank,
     enrichEvidence: input.enrichEvidence,
     discoveryBudget: input.discoveryBudget || new InMemoryDiscoveryBudgetRepository(),
   };
 }
+
+test("unapproved global ranking skips enrichment and provider ranking while preserving deterministic fallback", async () => {
+  const fake = fakePersistence();
+  let enrichmentCalled = false;
+  let rankingCalled = false;
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1), candidate(2)],
+    persistence: fake.persistence,
+    releaseDecision: {
+      enabled: false,
+      reason: "explicit_product_approval_required",
+      scorecardId: "gdr-reviewable-fixture-scorecard",
+      positiveCriteria: ["freshness", "credibility", "diversity", "explanationAccuracy"],
+      requiredPositiveCriteria: 4,
+      approval: null,
+    },
+    enrichEvidence: async () => {
+      enrichmentCalled = true;
+      return new Map();
+    },
+    rank: async (groups) => {
+      rankingCalled = true;
+      return groups.map((group) => group.identity);
+    },
+  }));
+
+  assert.equal(enrichmentCalled, false);
+  assert.equal(rankingCalled, false);
+  assert.equal(result.ranking, "fallback");
+  assert.equal(result.releaseDecision.enabled, false);
+  assert.equal(result.selectedProducts, 2);
+  assert.ok(fake.snapshots.every((snapshot) => snapshot.provenance === "fallback"));
+});
 
 test("pre-scoring uses stable source-relative traction and the 45/35/20 weights", () => {
   const groups = [
