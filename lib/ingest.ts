@@ -3,7 +3,7 @@ import { dailyRuns, productEvidence, productSources, products, selectionSnapshot
 import { createDrizzleDiscoveryBudgetRepository } from "@/lib/discovery-budget-db";
 import {
   discoveryBudgetMonth,
-  estimateDiscoveryRequestMicros,
+  estimateConservativeDiscoveryRequestMicros,
   recordDiscoveryBudgetUsage,
   type DiscoveryBudgetRepository,
   type DiscoveryBudgetReservation,
@@ -207,9 +207,7 @@ function officialGitHubRepository(group: CandidateGroup) {
   return undefined;
 }
 
-async function enrichProductionEvidence(groups: CandidateGroup[]) {
-  const db = getDb();
-  const budget = db ? createDrizzleDiscoveryBudgetRepository(db) : null;
+async function enrichProductionEvidence(groups: CandidateGroup[], budget: DiscoveryBudgetRepository) {
   const records = await Promise.all(groups.map(async (group) => {
     const best = group.items.find((candidate) => candidate.websiteUrl) || group.items[0]!;
     const input = {
@@ -220,13 +218,11 @@ async function enrichProductionEvidence(groups: CandidateGroup[]) {
       metadataProvenance: "source",
     } as const;
     const deterministicRecord = await enrichOfficialEvidence(input, fetchBoundedOfficialEvidence);
-    const record = budget
-      ? await enrichEvidenceWithDeepSeek(
-          { name: best.name, officialEvidenceUrl: deterministicRecord.officialEvidenceUrl },
-          deterministicRecord,
-          { now: () => new Date(), budget, extract: extractEvidenceWithDeepSeek },
-        )
-      : deterministicRecord;
+    const record = await enrichEvidenceWithDeepSeek(
+      { name: best.name, officialEvidenceUrl: deterministicRecord.officialEvidenceUrl },
+      deterministicRecord,
+      { now: () => new Date(), budget, extract: extractEvidenceWithDeepSeek },
+    );
     return [group.identity, record] as const;
   }));
   return new Map(records);
@@ -283,7 +279,9 @@ export async function runDailyFeed(
     for (const archive of archiveCandidates) if (archive.evidence) evidence.set(archive.group.identity, archive.evidence);
     const refreshedEvidenceByIdentity = new Map<string, EvidenceRecord>();
     try {
-      const refreshedEvidence = dependencies.enrichEvidence ? await dependencies.enrichEvidence(groupsToEnrich) : await enrichProductionEvidence(groupsToEnrich);
+      const refreshedEvidence = dependencies.enrichEvidence
+        ? await dependencies.enrichEvidence(groupsToEnrich)
+        : await enrichProductionEvidence(groupsToEnrich, dependencies.discoveryBudget);
       for (const [identity, record] of refreshedEvidence) {
         if (!hasRefreshableOfficialEvidence(record)) continue;
         evidence.set(identity, record);
@@ -324,9 +322,9 @@ export async function runDailyFeed(
     try {
       if (shortlist.length > 1) {
         rankingReservation = await dependencies.discoveryBudget.reserve({
-          month: discoveryBudgetMonth(startedAt),
+          month: discoveryBudgetMonth(dependencies.now()),
           operation: "ranking",
-          estimatedMicros: estimateDiscoveryRequestMicros({
+          estimatedMicros: estimateConservativeDiscoveryRequestMicros({
             inputCharacters: JSON.stringify(shortlist).length,
             maximumOutputTokens: 1200,
           }),

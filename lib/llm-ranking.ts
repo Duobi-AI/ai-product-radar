@@ -6,6 +6,7 @@ import type { CandidateGroup } from "@/lib/daily-candidates";
 import type { ProductListing } from "@/lib/domain";
 
 const MODEL = process.env.AI_RANKING_MODEL || "google/gemini-2.5-flash-lite";
+const DEFAULT_BUDGETED_RANKING_MODEL = "google/gemini-2.5-flash-lite";
 const rankingCache = new Map<string, { expiresAt: number; productIds: string[] }>();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
@@ -48,6 +49,9 @@ async function requestRanking(
 
 export async function rankDailyCandidateIdsWithUsage(groups: CandidateGroup[]) {
   if (groups.length <= 1) return { productIds: groups.map((group) => group.identity) };
+  if (MODEL !== DEFAULT_BUDGETED_RANKING_MODEL && !MODEL.startsWith("deepseek/")) {
+    throw new Error("The configured ranking model has no Discovery Budget price ceiling");
+  }
   const candidates = groups.map((group) => {
     const best = [...group.items].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
     return {

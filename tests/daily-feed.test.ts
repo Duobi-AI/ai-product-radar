@@ -92,11 +92,12 @@ function dependencies(input: {
   candidates: SourceCandidate[];
   rank: DailyFeedDependencies["rank"];
   persistence: DailyFeedPersistence;
+  now?: DailyFeedDependencies["now"];
   enrichEvidence?: DailyFeedDependencies["enrichEvidence"];
   discoveryBudget?: DiscoveryBudgetRepository;
 }): DailyFeedDependencies {
   return {
-    now: () => NOW,
+    now: input.now || (() => NOW),
     collect: async () => [{ key: "product_hunt", candidates: input.candidates, error: null }],
     persistence: input.persistence,
     rank: input.rank,
@@ -428,4 +429,24 @@ test("Daily Feed skips model ranking and completes deterministically when the mo
   assert.deepEqual(result.selected.map((group) => group.identity), ["name:ai-item-2", "name:ai-item-1"]);
   assert.equal(budget.requests.length, 0);
   assert.ok(fake.completed);
+});
+
+test("ranking budget uses the month in which its model request is reserved", async () => {
+  const fake = fakePersistence();
+  const budget = new InMemoryDiscoveryBudgetRepository();
+  let clockCalls = 0;
+  const dates = [
+    new Date("2026-09-30T23:59:59.900Z"),
+    new Date("2026-10-01T00:00:00.100Z"),
+    new Date("2026-10-01T00:00:01.000Z"),
+  ];
+  await runDailyFeed(dependencies({
+    now: () => dates[clockCalls++] || dates[2]!,
+    candidates: [candidate(1), candidate(2)],
+    persistence: fake.persistence,
+    discoveryBudget: budget,
+    rank: async (groups) => ({ productIds: groups.map((group) => group.identity) }),
+  }));
+
+  assert.equal(budget.requests[0]?.month, "2026-10");
 });

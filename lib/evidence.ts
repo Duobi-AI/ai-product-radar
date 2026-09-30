@@ -2,7 +2,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import {
   discoveryBudgetMonth,
-  estimateDiscoveryRequestMicros,
+  estimateConservativeDiscoveryRequestMicros,
   recordDiscoveryBudgetUsage,
   type DiscoveryBudgetRepository,
   type DiscoveryProviderUsage,
@@ -201,7 +201,7 @@ export async function enrichEvidenceWithDeepSeek(
     excerpts: record.supportingExcerpts.slice(0, 2).map((excerpt) => excerpt.slice(0, MAX_EXCERPT_CHARS)),
     missingFields,
   };
-  const estimatedMicros = estimateDiscoveryRequestMicros({
+  const estimatedMicros = estimateConservativeDiscoveryRequestMicros({
     inputCharacters: JSON.stringify(request).length,
     maximumOutputTokens: MAX_EXTRACTION_OUTPUT_TOKENS,
   });

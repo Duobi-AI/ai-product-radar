@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 export const MONTHLY_DISCOVERY_BUDGET_MICROS = 1_000_000;
-// Peak DeepSeek V4 Pro rates (USD per million tokens, converted to micros),
-// conservatively above Flash rates. Review if provider pricing changes:
+// Shared peak-rate ceiling applied to every discovery request. Peak DeepSeek
+// V4 Pro rates (USD per million tokens, converted to micros) exceed the current
+// default Gemini 2.5 Flash Lite and DeepSeek Flash rates. Keep configured ranking
+// models on DeepSeek or that Gemini default; review if provider pricing changes:
 // https://api-docs.deepseek.com/quick_start/pricing/
 const INPUT_PRICE_MICROS_PER_MILLION_TOKENS = 1_320_000;
 const OUTPUT_PRICE_MICROS_PER_MILLION_TOKENS = 3_960_000;
@@ -58,7 +60,7 @@ export function isValidDiscoveryReservationMicros(amount: number, capMicros = MO
   return Number.isSafeInteger(amount) && amount > 0 && amount <= capMicros;
 }
 
-export function estimateDiscoveryRequestMicros(input: {
+export function estimateConservativeDiscoveryRequestMicros(input: {
   inputCharacters: number;
   maximumOutputTokens: number;
 }) {
