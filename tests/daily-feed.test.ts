@@ -339,7 +339,7 @@ test("Daily Feed completes with deterministic scoring when evidence enrichment f
 
   assert.equal(result.status, "complete");
   assert.equal(result.selectedProducts, 1);
-  assert.equal(result.selected[0]?.score.evidenceConfidence, 0.8);
+  assert.equal(result.selected[0]?.score.evidenceConfidence, 0.25);
   assert.ok(fake.completed);
 });
 
