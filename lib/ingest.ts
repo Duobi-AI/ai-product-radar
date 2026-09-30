@@ -27,7 +27,7 @@ import {
   renderEvidenceBackedRankingReason,
   type EvidenceRecord,
 } from "@/lib/evidence";
-import { rankDailyCandidateIdsWithUsage } from "@/lib/llm-ranking";
+import { rankGlobalDailyCandidateIdsWithUsage } from "@/lib/llm-ranking";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
@@ -89,7 +89,7 @@ export type DailyFeedDependencies = {
   discoveryBudget: DiscoveryBudgetRepository;
   enrichEvidence?: (groups: CandidateGroup[]) => Promise<Map<string, EvidenceRecord>>;
   /** Return only supplied shortlist identities, in desired feed order, with provider usage when available. */
-  rank: (shortlist: ScoredCandidateGroup[]) => Promise<readonly string[] | {
+  rank: (shortlist: ScoredCandidateGroup[], evidence: ReadonlyMap<string, EvidenceRecord>) => Promise<readonly string[] | {
     productIds: readonly string[];
     usage?: DiscoveryProviderUsage;
   }>;
@@ -130,7 +130,7 @@ function validateRanking(ids: readonly string[], allowed: Set<string>) {
   if (!ids.length || ids.length > MAX_DAILY_FEED) return null;
   const unique = new Set<string>();
   for (const id of ids) {
-    if (typeof id !== "string" || !allowed.has(id) || unique.has(id)) return null;
+    if (typeof id !== "string" || !allowed.has(id)) return null;
     unique.add(id);
   }
   return [...unique];
@@ -315,44 +315,47 @@ export async function runDailyFeed(
       now: startedAt,
       evidenceConfidence: (group) => evidenceConfidenceValue(evidence.get(group.identity)) ?? coldStartEvidenceConfidence(group),
     });
-    let orderedCandidates: ScoredCandidateGroup[];
-    let ranking: DailyFeedResult["ranking"] = "provider";
+    let orderedCandidates = fallbackOrder(shortlist);
+    let ranking: DailyFeedResult["ranking"] = "fallback";
     let rankingReservation: DiscoveryBudgetReservation | null = null;
     let rankingOutcomeRecorded = false;
-    try {
-      if (shortlist.length > 1) {
+    if (shortlist.length > 1) {
+      try {
         rankingReservation = await dependencies.discoveryBudget.reserve({
           month: discoveryBudgetMonth(dependencies.now()),
           operation: "ranking",
           estimatedMicros: estimateConservativeDiscoveryRequestMicros({
-            inputCharacters: JSON.stringify(shortlist).length,
+            inputCharacters: JSON.stringify({
+              shortlist,
+              evidence: Object.fromEntries(shortlist.map((group) => [group.identity, evidence.get(group.identity) ?? null])),
+            }).length,
             maximumOutputTokens: 1200,
           }),
         });
         if (!rankingReservation) throw new Error("Monthly Discovery Budget exhausted");
+        const response = await dependencies.rank(shortlist, evidence);
+        const ids = "productIds" in response ? response.productIds : response;
+        const usage = "productIds" in response ? response.usage : undefined;
+        const rankedIds = validateRanking(ids, new Set(shortlist.map((group) => group.identity)));
+        await recordDiscoveryBudgetUsage(dependencies.discoveryBudget, rankingReservation, {
+          outcome: rankedIds ? "completed" : "invalid",
+          usage,
+        });
+        rankingOutcomeRecorded = true;
+        if (!rankedIds) throw new Error("Ranking output did not contain valid shortlist identities");
+        const byIdentity = new Map(shortlist.map((group) => [group.identity, group]));
+        const modelOrder = rankedIds.map((id) => byIdentity.get(id)!);
+        const remaining = shortlist.filter((group) => !rankedIds.includes(group.identity));
+        orderedCandidates = [...modelOrder, ...remaining];
+        ranking = "provider";
+      } catch {
+        if (!rankingOutcomeRecorded) {
+          await recordDiscoveryBudgetUsage(dependencies.discoveryBudget, rankingReservation, { outcome: "failed" });
+        }
+        // Ranking is optional refinement; a provider error or invalid response
+        // must never turn a successfully collected run into a failed one.
+        orderedCandidates = fallbackOrder(shortlist);
       }
-      const response = await dependencies.rank(shortlist);
-      const ids = "productIds" in response ? response.productIds : response;
-      const usage = "productIds" in response ? response.usage : undefined;
-      const rankedIds = validateRanking(ids, new Set(shortlist.map((group) => group.identity)));
-      await recordDiscoveryBudgetUsage(dependencies.discoveryBudget, rankingReservation, {
-        outcome: rankedIds ? "completed" : "invalid",
-        usage,
-      });
-      rankingOutcomeRecorded = true;
-      if (!rankedIds) throw new Error("Ranking output did not contain unique shortlist identities");
-      const byIdentity = new Map(shortlist.map((group) => [group.identity, group]));
-      const modelOrder = rankedIds.map((id) => byIdentity.get(id)!);
-      const remaining = shortlist.filter((group) => !rankedIds.includes(group.identity));
-      orderedCandidates = [...modelOrder, ...remaining];
-    } catch {
-      if (!rankingOutcomeRecorded) {
-        await recordDiscoveryBudgetUsage(dependencies.discoveryBudget, rankingReservation, { outcome: "failed" });
-      }
-      // Ranking is optional refinement; a provider error or invalid response
-      // must never turn a successfully collected run into a failed one.
-      ranking = "fallback";
-      orderedCandidates = fallbackOrder(shortlist);
     }
     const selected = applyRediscoveryAndSoftDiversity(orderedCandidates.map((group) => ({
       productId: group.identity,
@@ -652,6 +655,6 @@ export async function runDailyIngestion(options: { force?: boolean } = {}) {
     collect: collectProductionSources,
     persistence: productionPersistence(),
     discoveryBudget: createDrizzleDiscoveryBudgetRepository(db),
-    rank: rankDailyCandidateIdsWithUsage,
+    rank: rankGlobalDailyCandidateIdsWithUsage,
   }, options);
 }
