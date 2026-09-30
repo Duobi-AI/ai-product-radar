@@ -179,3 +179,24 @@ export const dailyRuns = pgTable("daily_runs", {
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
 });
+
+export const discoveryBudgetMonths = pgTable("discovery_budget_months", {
+  month: text("month").primaryKey(),
+  reservedMicros: integer("reserved_micros").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const discoveryBudgetRequests = pgTable(
+  "discovery_budget_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    month: text("month").notNull().references(() => discoveryBudgetMonths.month, { onDelete: "cascade" }),
+    operation: text("operation").notNull(),
+    estimatedMicros: integer("estimated_micros").notNull(),
+    outcome: text("outcome"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("discovery_budget_requests_month_idx").on(table.month)],
+);

@@ -29,7 +29,8 @@ Each daily run searches a rolling window, merges mentions sharing a product webs
 | `CRON_SECRET` | Yes in deployment | Random bearer secret for the Vercel daily job |
 | `PRODUCT_HUNT_TOKEN` | Recommended | Product Hunt API access token |
 | `GITHUB_TOKEN` | Optional | Raises GitHub REST API search rate limits |
-| `AI_RANKING_MODEL` | Optional | Vercel AI Gateway model for daily and personalized ranking; defaults to Gemini 2.5 Flash Lite |
+| `AI_RANKING_MODEL` | Optional | Vercel AI Gateway model for daily and personalized ranking; defaults to Gemini 2.5 Flash Lite. Daily ranking budget estimates support DeepSeek models and that Gemini default. |
+| `AI_EVIDENCE_MODEL` | Optional | Vercel AI Gateway model for conditional official-evidence extraction; defaults to DeepSeek V4.1 Flash |
 
 Set the Google OAuth authorized redirect URI to `http://localhost:3000/api/auth/callback/google` locally and `https://YOUR_DOMAIN/api/auth/callback/google` in production. The Better Auth callback endpoint is the same for each deployment origin.
 
