@@ -101,7 +101,7 @@ function dependencies(input: {
     persistence: input.persistence,
     rank: input.rank,
     enrichEvidence: input.enrichEvidence,
-    discoveryBudget: input.discoveryBudget,
+    discoveryBudget: input.discoveryBudget || new InMemoryDiscoveryBudgetRepository(),
   };
 }
 

@@ -37,6 +37,19 @@ export type DiscoveryBudgetRepository = {
   ) => Promise<void>;
 };
 
+export async function recordDiscoveryBudgetUsage(
+  budget: DiscoveryBudgetRepository,
+  reservation: DiscoveryBudgetReservation | null,
+  input: { outcome: DiscoveryRequestOutcome; usage?: DiscoveryProviderUsage },
+) {
+  if (!reservation) return;
+  try {
+    await budget.recordUsage(reservation, input);
+  } catch {
+    // The estimate remains reserved even if the provider usage receipt cannot be written.
+  }
+}
+
 export function discoveryBudgetMonth(date: Date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }

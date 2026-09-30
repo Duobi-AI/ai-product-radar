@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   discoveryBudgetMonth,
   estimateDiscoveryRequestMicros,
+  recordDiscoveryBudgetUsage,
   type DiscoveryBudgetRepository,
   type DiscoveryProviderUsage,
 } from "@/lib/discovery-budget";
@@ -248,11 +249,7 @@ export async function enrichEvidenceWithDeepSeek(
     // DeepSeek is an optional evidence improvement, not a run prerequisite.
   }
 
-  try {
-    await dependencies.budget.recordUsage(reservation, { outcome, usage });
-  } catch {
-    // The estimate remains reserved even if the usage receipt cannot be written.
-  }
+  await recordDiscoveryBudgetUsage(dependencies.budget, reservation, { outcome, usage });
   return enriched;
 }
 

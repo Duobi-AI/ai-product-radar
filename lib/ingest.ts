@@ -4,6 +4,7 @@ import { createDrizzleDiscoveryBudgetRepository } from "@/lib/discovery-budget-d
 import {
   discoveryBudgetMonth,
   estimateDiscoveryRequestMicros,
+  recordDiscoveryBudgetUsage,
   type DiscoveryBudgetRepository,
   type DiscoveryBudgetReservation,
   type DiscoveryProviderUsage,
@@ -85,7 +86,7 @@ export type DailyFeedDependencies = {
   now: () => Date;
   collect: (since: Date) => Promise<DailyCollectionResult[]>;
   persistence: DailyFeedPersistence;
-  discoveryBudget?: DiscoveryBudgetRepository;
+  discoveryBudget: DiscoveryBudgetRepository;
   enrichEvidence?: (groups: CandidateGroup[]) => Promise<Map<string, EvidenceRecord>>;
   /** Return only supplied shortlist identities, in desired feed order, with provider usage when available. */
   rank: (shortlist: ScoredCandidateGroup[]) => Promise<readonly string[] | {
@@ -141,19 +142,6 @@ function isDailyRunStatus(status: string): status is DailyRunStatus {
 
 function fallbackOrder(shortlist: ScoredCandidateGroup[]) {
   return shortlist.slice(0, MAX_DAILY_FEED);
-}
-
-async function recordBudgetedRankingUsage(
-  budget: DiscoveryBudgetRepository | undefined,
-  reservation: DiscoveryBudgetReservation | null,
-  input: { outcome: "completed" | "invalid" | "failed"; usage?: DiscoveryProviderUsage },
-) {
-  if (!budget || !reservation) return;
-  try {
-    await budget.recordUsage(reservation, input);
-  } catch {
-    // The estimate remains reserved even if the provider usage receipt cannot be written.
-  }
 }
 
 function evidenceConfidenceValue(record: EvidenceRecord | undefined) {
@@ -334,7 +322,7 @@ export async function runDailyFeed(
     let rankingReservation: DiscoveryBudgetReservation | null = null;
     let rankingOutcomeRecorded = false;
     try {
-      if (dependencies.discoveryBudget && shortlist.length > 1) {
+      if (shortlist.length > 1) {
         rankingReservation = await dependencies.discoveryBudget.reserve({
           month: discoveryBudgetMonth(startedAt),
           operation: "ranking",
@@ -349,7 +337,7 @@ export async function runDailyFeed(
       const ids = "productIds" in response ? response.productIds : response;
       const usage = "productIds" in response ? response.usage : undefined;
       const rankedIds = validateRanking(ids, new Set(shortlist.map((group) => group.identity)));
-      await recordBudgetedRankingUsage(dependencies.discoveryBudget, rankingReservation, {
+      await recordDiscoveryBudgetUsage(dependencies.discoveryBudget, rankingReservation, {
         outcome: rankedIds ? "completed" : "invalid",
         usage,
       });
@@ -361,7 +349,7 @@ export async function runDailyFeed(
       orderedCandidates = [...modelOrder, ...remaining];
     } catch {
       if (!rankingOutcomeRecorded) {
-        await recordBudgetedRankingUsage(dependencies.discoveryBudget, rankingReservation, { outcome: "failed" });
+        await recordDiscoveryBudgetUsage(dependencies.discoveryBudget, rankingReservation, { outcome: "failed" });
       }
       // Ranking is optional refinement; a provider error or invalid response
       // must never turn a successfully collected run into a failed one.
