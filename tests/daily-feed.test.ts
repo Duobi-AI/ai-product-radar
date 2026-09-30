@@ -74,13 +74,11 @@ function fakePersistence(): {
         evidenceRefreshedAt = refreshedAt;
         for (const [identity, record] of records) evidence.set(identity, record);
       },
-      persistSelectionSnapshots: async (records) => {
+      persistDailySelection: async (entries, records) => {
+        ranked.push(...entries);
         snapshots.push(...records);
       },
       loadArchiveRediscoveries: async () => [],
-      setDailyRanks: async (entries) => {
-        ranked.push(...entries);
-      },
       completeRun: async (input) => {
         completed = { localDate: input.localDate, sourceResults: input.sourceResults };
       },
@@ -207,11 +205,16 @@ test("a qualified archive rediscovery is selected and recorded as a rediscovery"
   const result = await runDailyFeed(dependencies({
     candidates: [candidate(1)],
     persistence: fake.persistence,
+    enrichEvidence: async () => new Map([["name:ai-item-99", {
+      factualSummary: "An AI assistant for teams, with a new workflow.", primaryUseCase: "research", audience: "teams", productType: "assistant",
+      officialEvidenceUrl: "https://item-99.example.com", supportingExcerpts: ["Official launch details"], confidence: "high", conflicts: [],
+    }]]),
     rank: async (groups) => ["name:ai-item-99", ...groups.map((group) => group.identity).filter((id) => id !== "name:ai-item-99")],
   }));
 
   assert.equal(result.selected[0]?.identity, "name:ai-item-99");
   assert.equal(fake.snapshots.find((snapshot) => snapshot.productId === "archive-product")?.rediscovery, true);
+  assert.equal(fake.snapshots.find((snapshot) => snapshot.productId === "archive-product")?.rediscoveryReason, "refreshed_official_evidence");
 });
 
 test("an archive-only product can qualify through newly refreshed official evidence", async () => {

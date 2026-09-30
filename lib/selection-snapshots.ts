@@ -95,6 +95,7 @@ export type SelectionSnapshot = {
   acceptedEvidence: Record<string, unknown>;
   rankingReason: string | null;
   rediscovery: boolean;
+  rediscoveryReason: "refreshed_official_evidence" | "new_qualifying_product_mention" | null;
   provenance: "model" | "fallback";
 };
 

@@ -55,9 +55,12 @@ export type DailyFeedPersistence = {
   /** Persist every eligible source mention before ranking, keyed by group identity. */
   persistCandidates: (groups: CandidateGroup[]) => Promise<Map<string, string>>;
   persistEvidence: (records: Map<string, EvidenceRecord>, productIds: Map<string, string>, groups: CandidateGroup[], refreshedAt: Date) => Promise<void>;
-  persistSelectionSnapshots: (records: SelectionSnapshot[]) => Promise<void>;
+  persistDailySelection: (
+    entries: { identity: string; rank: number }[],
+    records: SelectionSnapshot[],
+    productIds: Map<string, string>,
+  ) => Promise<void>;
   loadArchiveRediscoveries: () => Promise<ArchiveRediscoveryCandidate[]>;
-  setDailyRanks: (entries: { identity: string; rank: number }[], productIds: Map<string, string>) => Promise<void>;
   completeRun: (input: { localDate: string; sourceResults: Record<string, SourceResult>; finishedAt: Date }) => Promise<void>;
   failRun: (input: { localDate: string; error: string; finishedAt: Date }) => Promise<void>;
 };
@@ -261,14 +264,17 @@ export async function runDailyFeed(
     for (const group of groupsToEnrich) if (!evidence.has(group.identity)) evidence.set(group.identity, incompleteEvidenceRecord(group));
 
     const rediscoveryByIdentity = new Map<string, ArchiveRediscoveryCandidate>();
+    const rediscoveryReasonByIdentity = new Map<string, "refreshed_official_evidence" | "new_qualifying_product_mention">();
     for (const archive of archiveCandidates) {
       const refreshedEvidence = refreshedEvidenceByIdentity.get(archive.group.identity);
       const candidate = {
         ...archive,
         evidenceRefreshedAt: refreshedEvidence && hasRefreshableOfficialEvidence(refreshedEvidence) ? startedAt : archive.evidenceRefreshedAt,
       };
-      if (!qualifyRediscovery(candidate, startedAt).qualified) continue;
+      const qualification = qualifyRediscovery(candidate, startedAt);
+      if (!qualification.qualified) continue;
       rediscoveryByIdentity.set(archive.group.identity, archive);
+      rediscoveryReasonByIdentity.set(archive.group.identity, qualification.reason);
       productIds.set(archive.group.identity, archive.productId);
     }
     const groups = [...currentGroups.filter((group) => !previouslySelected.has(group.identity) || rediscoveryByIdentity.has(group.identity)), ...[...rediscoveryByIdentity.values()]
@@ -302,10 +308,6 @@ export async function runDailyFeed(
       rediscovery: rediscoveryByIdentity.has(group.identity),
     })), MAX_DAILY_FEED).map((candidate) => orderedCandidates.find((group) => group.identity === candidate.productId)!);
 
-    await dependencies.persistence.setDailyRanks(
-      selected.map((group, index) => ({ identity: group.identity, rank: index + 1 })),
-      productIds,
-    );
     const snapshots = selected.map((group, index) => {
       const productId = productIds.get(group.identity);
       if (!productId) throw new Error(`Could not persist selected product ${group.identity}`);
@@ -321,10 +323,15 @@ export async function runDailyFeed(
         acceptedEvidence: evidenceRecord ? structuredClone(evidenceRecord) as Record<string, unknown> : {},
         rankingReason: evidenceRecord ? rankingReasonFor(evidenceRecord, group) : null,
         rediscovery: rediscoveryByIdentity.has(group.identity),
+        rediscoveryReason: rediscoveryReasonByIdentity.get(group.identity) ?? null,
         provenance: ranking === "provider" ? "model" as const : "fallback" as const,
       };
     });
-    await dependencies.persistence.persistSelectionSnapshots(snapshots);
+    await dependencies.persistence.persistDailySelection(
+      selected.map((group, index) => ({ identity: group.identity, rank: index + 1 })),
+      snapshots,
+      productIds,
+    );
     const sourceResults = Object.fromEntries(
       collectionResults.map((result) => [
         result.key,
@@ -478,9 +485,12 @@ function productionPersistence(): DailyFeedPersistence {
         });
       }
     },
-    persistSelectionSnapshots: async (records) => {
-      if (!records.length) return;
-      await db.insert(selectionSnapshots).values(records.map((record) => ({
+    persistDailySelection: async (entries, records, productIds) => {
+      const rankUpdates = entries.flatMap((entry) => {
+        const productId = productIds.get(entry.identity);
+        return productId ? [db.update(products).set({ dailyRank: entry.rank }).where(eq(products.id, productId))] : [];
+      });
+      const snapshotInsert = records.length ? [db.insert(selectionSnapshots).values(records.map((record) => ({
         productId: record.productId,
         selectedAt: record.selectedAt,
         rank: record.rank,
@@ -491,8 +501,11 @@ function productionPersistence(): DailyFeedPersistence {
         acceptedEvidence: record.acceptedEvidence,
         rankingReason: record.rankingReason,
         rediscovery: record.rediscovery,
+        rediscoveryReason: record.rediscoveryReason,
         provenance: record.provenance,
-      })));
+      })))] : [];
+      const statements = [...snapshotInsert, ...rankUpdates];
+      if (statements.length) await db.batch(statements as [typeof statements[number], ...typeof statements[number][]]);
     },
     loadArchiveRediscoveries: async () => {
       const [storedProducts, sources, evidenceRows, snapshots] = await Promise.all([
@@ -542,12 +555,6 @@ function productionPersistence(): DailyFeedPersistence {
           evidence: evidence ? evidenceRecordFromStored(evidence) : null,
         }];
       });
-    },
-    setDailyRanks: async (entries, productIds) => {
-      for (const entry of entries) {
-        const productId = productIds.get(entry.identity);
-        if (productId) await db.update(products).set({ dailyRank: entry.rank }).where(eq(products.id, productId));
-      }
     },
     completeRun: async ({ localDate, sourceResults, finishedAt }) => {
       await db.update(dailyRuns).set({ status: "complete", sourceResults, finishedAt }).where(eq(dailyRuns.localDate, localDate));

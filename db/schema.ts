@@ -146,6 +146,7 @@ export const selectionSnapshots = pgTable(
     acceptedEvidence: jsonb("accepted_evidence").$type<Record<string, unknown>>().notNull().default({}),
     rankingReason: text("ranking_reason"),
     rediscovery: boolean("rediscovery").notNull().default(false),
+    rediscoveryReason: text("rediscovery_reason"),
     provenance: text("provenance").notNull(),
   },
   (table) => [

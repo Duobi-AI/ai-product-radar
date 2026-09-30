@@ -85,6 +85,17 @@ test("soft diversity defers only lexically near-identical products with comparab
   assert.deepEqual(selected.map((item) => item.productId), ["research-one", "same-category-different-product"]);
 });
 
+test("soft diversity catches near-duplicates with slightly different wording", () => {
+  const sharedTokens = ["ai", "research", "assistant", "for", "teams", "that", "summarizes", "papers", "and", "extracts", "key", "findings", "with", "citations", "source", "links", "and", "collaboration", "tools"];
+  const selected = applyRediscoveryAndSoftDiversity([
+    { productId: "research-assistant", deterministicScore: 0.9, similarityTokens: [...sharedTokens, "workflow"], rediscovery: false },
+    { productId: "research-copilot", deterministicScore: 0.89, similarityTokens: [...sharedTokens, "workspace"], rediscovery: false },
+    { productId: "coding-agent", deterministicScore: 0.88, similarityTokens: ["ai", "coding", "agent", "repository", "tests"], rediscovery: false },
+  ], 2);
+
+  assert.deepEqual(selected.map((item) => item.productId), ["research-assistant", "coding-agent"]);
+});
+
 test("selection snapshots are immutable and expire after one year", async () => {
   const repository = new InMemorySelectionSnapshotRepository();
   const selectedAt = new Date("2025-09-28T19:00:00.000Z");
@@ -99,6 +110,7 @@ test("selection snapshots are immutable and expire after one year", async () => 
     acceptedEvidence: { summary: "Official fact" },
     rankingReason: "Officially described as a tool; its stated primary use case is research.",
     rediscovery: false,
+    rediscoveryReason: null,
     provenance: "fallback",
   });
 
