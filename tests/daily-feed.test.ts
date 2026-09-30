@@ -11,8 +11,9 @@ import {
   type DailyFeedPersistence,
 } from "../lib/ingest";
 import type { SourceCandidate } from "../lib/domain";
-import type { EvidenceRecord } from "../lib/evidence";
 import type { SelectionSnapshot } from "../lib/selection-snapshots";
+import { enrichEvidenceWithDeepSeek, type EvidenceRecord } from "../lib/evidence";
+import { InMemoryDiscoveryBudgetRepository } from "../lib/discovery-budget";
 
 const NOW = new Date("2026-09-29T19:00:00.000Z");
 
@@ -320,4 +321,64 @@ test("snapshots retain low-confidence evidence and an honest two-clause reason w
   assert.equal(snapshot.acceptedEvidence.confidence, "low");
   assert.equal(snapshot.rankingReason, "Observed on Product Hunt; official product details remain incomplete.");
   assert.equal(snapshot.rankingReason.split("; ").length, 2);
+});
+
+test("Daily Feed completes with deterministic scoring when evidence enrichment fails", async () => {
+  const fake = fakePersistence();
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1)],
+    persistence: fake.persistence,
+    enrichEvidence: async () => {
+      throw new Error("DeepSeek unavailable");
+    },
+    rank: async (groups) => groups.map((group) => group.identity),
+  }));
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.selectedProducts, 1);
+  assert.equal(result.selected[0]?.score.evidenceConfidence, 0.8);
+  assert.ok(fake.completed);
+});
+
+test("Daily Feed completes with the deterministic Evidence Record when the monthly budget is exhausted", async () => {
+  const fake = fakePersistence();
+  const budget = new InMemoryDiscoveryBudgetRepository({ capMicros: 0 });
+  let modelCalls = 0;
+  const baseRecord: EvidenceRecord = {
+    factualSummary: "A source-grounded summary.",
+    primaryUseCase: null,
+    audience: null,
+    productType: null,
+    officialEvidenceUrl: "https://item-1.example.com",
+    supportingExcerpts: ["The official product page has a short description."],
+    confidence: "low",
+    conflicts: [],
+  };
+
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1)],
+    persistence: fake.persistence,
+    enrichEvidence: async (groups) => new Map(await Promise.all(groups.map(async (group) => [
+      group.identity,
+      await enrichEvidenceWithDeepSeek(
+        { name: group.items[0]!.name, officialEvidenceUrl: baseRecord.officialEvidenceUrl },
+        baseRecord,
+        {
+          now: () => NOW,
+          budget,
+          extract: async () => {
+            modelCalls += 1;
+            return { output: {} };
+          },
+        },
+      ),
+    ] as const))),
+    rank: async (groups) => groups.map((group) => group.identity),
+  }));
+
+  assert.equal(result.status, "complete");
+  assert.equal(modelCalls, 0);
+  assert.deepEqual(fake.evidence.get("name:ai-item-1"), baseRecord);
+  assert.equal(result.selected[0]?.score.evidenceConfidence, 0.25);
+  assert.ok(fake.completed);
 });

@@ -1,5 +1,6 @@
 import { eq, lt } from "drizzle-orm";
 import { dailyRuns, productEvidence, productSources, products, selectionSnapshots } from "@/db/schema";
+import { createDrizzleDiscoveryBudgetRepository } from "@/lib/discovery-budget-db";
 import { getDb } from "@/lib/db";
 import { identityForCandidate, prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
 import {
@@ -9,7 +10,15 @@ import {
   type ScoredCandidateGroup,
 } from "@/lib/daily-ranking";
 import type { SourceCandidate, SourceKey } from "@/lib/domain";
-import { enrichOfficialEvidence, fetchBoundedOfficialEvidence, hasRefreshableOfficialEvidence, renderEvidenceBackedRankingReason, type EvidenceRecord } from "@/lib/evidence";
+import {
+  enrichEvidenceWithDeepSeek,
+  enrichOfficialEvidence,
+  extractEvidenceWithDeepSeek,
+  fetchBoundedOfficialEvidence,
+  hasRefreshableOfficialEvidence,
+  renderEvidenceBackedRankingReason,
+  type EvidenceRecord,
+} from "@/lib/evidence";
 import { rankDailyCandidateIds } from "@/lib/llm-ranking";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
@@ -187,15 +196,25 @@ function officialGitHubRepository(group: CandidateGroup) {
 }
 
 async function enrichProductionEvidence(groups: CandidateGroup[]) {
+  const db = getDb();
+  const budget = db ? createDrizzleDiscoveryBudgetRepository(db) : null;
   const records = await Promise.all(groups.map(async (group) => {
     const best = group.items.find((candidate) => candidate.websiteUrl) || group.items[0]!;
-    const record = await enrichOfficialEvidence({
+    const input = {
       name: best.name,
       canonicalUrl: best.websiteUrl,
       githubRepositoryUrl: officialGitHubRepository(group),
       metadata: best.metadata,
       metadataProvenance: "source",
-    }, fetchBoundedOfficialEvidence);
+    } as const;
+    const deterministicRecord = await enrichOfficialEvidence(input, fetchBoundedOfficialEvidence);
+    const record = budget
+      ? await enrichEvidenceWithDeepSeek(
+          { name: best.name, officialEvidenceUrl: deterministicRecord.officialEvidenceUrl },
+          deterministicRecord,
+          { now: () => new Date(), budget, extract: extractEvidenceWithDeepSeek },
+        )
+      : deterministicRecord;
     return [group.identity, record] as const;
   }));
   return new Map(records);
