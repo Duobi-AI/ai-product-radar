@@ -283,8 +283,8 @@ export async function extractEvidenceWithDeepSeek(request: EvidenceExtractionReq
   return {
     output: result.output,
     usage: {
-      inputTokens: result.usage.inputTokens ?? 0,
-      outputTokens: result.usage.outputTokens ?? 0,
+      inputTokens: result.usage.inputTokens ?? undefined,
+      outputTokens: result.usage.outputTokens ?? undefined,
     },
   };
 }
