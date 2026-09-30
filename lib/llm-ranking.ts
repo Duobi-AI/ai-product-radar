@@ -5,8 +5,8 @@ import type { DiscoveryProviderUsage } from "@/lib/discovery-budget";
 import type { CandidateGroup } from "@/lib/daily-candidates";
 import type { ProductListing } from "@/lib/domain";
 
-const MODEL = process.env.AI_RANKING_MODEL || "google/gemini-2.5-flash-lite";
 const DEFAULT_BUDGETED_RANKING_MODEL = "google/gemini-2.5-flash-lite";
+const MODEL = process.env.AI_RANKING_MODEL || DEFAULT_BUDGETED_RANKING_MODEL;
 const rankingCache = new Map<string, { expiresAt: number; productIds: string[] }>();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
