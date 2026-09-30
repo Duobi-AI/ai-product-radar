@@ -417,7 +417,8 @@ async function storeCandidate(candidate: SourceCandidate) {
         sourceName: candidate.sourceName,
         score: candidate.score || 0,
         metadata: candidate.metadata || {},
-        seenAt: now,
+        // seenAt is the first observation of this distinct Product Mention.
+        // Refreshing the same source item must not qualify an archive rediscovery.
       },
     });
   return product.id;

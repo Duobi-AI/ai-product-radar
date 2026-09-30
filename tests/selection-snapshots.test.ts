@@ -59,6 +59,19 @@ test("a prior Daily Feed product rediscovery needs a 30-day absence and new qual
     ),
     { qualified: false },
   );
+
+  assert.deepEqual(
+    qualifyRediscovery(
+      {
+        productId: "product-a",
+        lastSelectedAt: selectedOn,
+        // Reobserving the same source item does not make its first-seen time new.
+        latestQualifyingMentionAt: selectedOn,
+      },
+      RUN_DATE,
+    ),
+    { qualified: false },
+  );
 });
 
 test("rediscovery and diversity policies preserve the highest order without quotas", () => {
