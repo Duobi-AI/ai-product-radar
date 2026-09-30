@@ -20,6 +20,17 @@ export type EvidenceRecord = {
   conflicts: Array<"factualSummary" | "primaryUseCase" | "audience" | "productType">;
 };
 
+export function hasRefreshableOfficialEvidence(record: EvidenceRecord) {
+  return Boolean(
+    record.supportingExcerpts.length
+    || record.conflicts.length
+    || record.factualSummary
+    || record.primaryUseCase
+    || record.audience
+    || record.productType,
+  );
+}
+
 export type OfficialEvidenceInput = {
   name: string;
   canonicalUrl?: string | null;
@@ -167,9 +178,20 @@ export async function enrichOfficialEvidence(input: OfficialEvidenceInput, fetch
   };
 }
 
-export function renderEvidenceBackedRankingReason(evidence: EvidenceRecord) {
-  if (!evidence.factualSummary || !evidence.primaryUseCase || evidence.conflicts.length) return null;
-  const summary = evidence.factualSummary.replace(/[.]+$/, "");
-  const useCase = evidence.primaryUseCase.replace(/[.]+$/, "");
-  return `Officially described as ${summary}; its stated primary use case is ${useCase}.`;
+export function renderEvidenceBackedRankingReason(evidence: EvidenceRecord, observedSources: string[] = []) {
+  if (evidence.conflicts.length) {
+    const fields = evidence.conflicts.join(", ");
+    return `Official sources conflict about ${fields}; those claims are omitted from ranking.`;
+  }
+  if (evidence.factualSummary) {
+    const summary = evidence.factualSummary.replace(/[.]+$/, "");
+    const useCase = evidence.primaryUseCase?.replace(/[.]+$/, "");
+    return useCase
+      ? `Officially described as ${summary}; its stated primary use case is ${useCase}.`
+      : `Officially described as ${summary}; the official page does not state a primary use case.`;
+  }
+  if (observedSources.length) {
+    return `Observed on ${[...new Set(observedSources)].join(" and ")}; official product details remain incomplete.`;
+  }
+  return null;
 }

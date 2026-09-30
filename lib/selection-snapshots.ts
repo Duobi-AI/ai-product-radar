@@ -2,6 +2,10 @@ export const REDISCOVERY_COOLDOWN_DAYS = 30;
 export const MAX_DAILY_REDISCOVERIES = 3;
 export const SELECTION_SNAPSHOT_RETENTION_DAYS = 365;
 
+export function selectionSnapshotRetentionCutoff(now: Date) {
+  return new Date(now.getTime() - SELECTION_SNAPSHOT_RETENTION_DAYS * 86_400_000);
+}
+
 export type RediscoveryCandidate = {
   productId: string;
   lastSelectedAt: Date | null;
@@ -13,11 +17,14 @@ export type RediscoveryQualification =
   | { qualified: true; reason: "refreshed_official_evidence" | "new_qualifying_product_mention" }
   | { qualified: false };
 
-export function qualifyRediscovery(candidate: RediscoveryCandidate, selectedAt: Date): RediscoveryQualification {
-  if (!candidate.lastSelectedAt) return { qualified: false };
+export function hasRediscoveryCooldownElapsed(lastSelectedAt: Date | null, now: Date) {
+  if (!lastSelectedAt) return false;
+  const cooldownEndsAt = new Date(lastSelectedAt.getTime() + REDISCOVERY_COOLDOWN_DAYS * 86_400_000);
+  return now >= cooldownEndsAt;
+}
 
-  const cooldownEndsAt = new Date(candidate.lastSelectedAt.getTime() + REDISCOVERY_COOLDOWN_DAYS * 86_400_000);
-  if (selectedAt < cooldownEndsAt) return { qualified: false };
+export function qualifyRediscovery(candidate: RediscoveryCandidate, selectedAt: Date): RediscoveryQualification {
+  if (!candidate.lastSelectedAt || !hasRediscoveryCooldownElapsed(candidate.lastSelectedAt, selectedAt)) return { qualified: false };
 
   if (candidate.evidenceRefreshedAt && candidate.evidenceRefreshedAt > candidate.lastSelectedAt && candidate.evidenceRefreshedAt <= selectedAt) {
     return { qualified: true, reason: "refreshed_official_evidence" };
@@ -31,17 +38,25 @@ export function qualifyRediscovery(candidate: RediscoveryCandidate, selectedAt: 
 export type RankedSelectionCandidate = {
   productId: string;
   deterministicScore: number;
-  similarityKey?: string | null;
+  similarityTokens?: string[];
   rediscovery: boolean;
 };
 
 const COMPARABLE_SCORE_DELTA = 0.05;
+const NEAR_DUPLICATE_JACCARD_THRESHOLD = 0.9;
 
 function isComparableNearDuplicate(candidate: RankedSelectionCandidate, selected: RankedSelectionCandidate[]) {
-  return selected.some((item) =>
-    item.similarityKey && item.similarityKey === candidate.similarityKey
-    && Math.abs(item.deterministicScore - candidate.deterministicScore) <= COMPARABLE_SCORE_DELTA,
-  );
+  const candidateTokens = new Set(candidate.similarityTokens ?? []);
+  if (!candidateTokens.size) return false;
+
+  return selected.some((item) => {
+    if (Math.abs(item.deterministicScore - candidate.deterministicScore) > COMPARABLE_SCORE_DELTA) return false;
+    const selectedTokens = new Set(item.similarityTokens ?? []);
+    if (!selectedTokens.size) return false;
+    const intersectionSize = [...candidateTokens].filter((token) => selectedTokens.has(token)).length;
+    const unionSize = new Set([...candidateTokens, ...selectedTokens]).size;
+    return unionSize > 0 && intersectionSize / unionSize >= NEAR_DUPLICATE_JACCARD_THRESHOLD;
+  });
 }
 
 export function applyRediscoveryAndSoftDiversity(candidates: RankedSelectionCandidate[], limit: number) {
@@ -118,6 +133,5 @@ export class InMemorySelectionSnapshotRepository implements SelectionSnapshotRep
 }
 
 export async function cleanupExpiredSelectionSnapshots(repository: SelectionSnapshotRepository, now: Date) {
-  const cutoff = new Date(now.getTime() - SELECTION_SNAPSHOT_RETENTION_DAYS * 86_400_000);
-  return repository.deleteSelectedBefore(cutoff);
+  return repository.deleteSelectedBefore(selectionSnapshotRetentionCutoff(now));
 }

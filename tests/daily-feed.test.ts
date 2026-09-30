@@ -38,12 +38,14 @@ function fakePersistence(): {
   completed: { localDate: string; sourceResults: Record<string, unknown> } | null;
   ranked: { identity: string; rank: number }[];
   evidence: Map<string, EvidenceRecord>;
+  evidenceRefreshedAt: Date | null;
   snapshots: SelectionSnapshot[];
 } {
   const persisted: string[] = [];
   let completed: { localDate: string; sourceResults: Record<string, unknown> } | null = null;
   const ranked: { identity: string; rank: number }[] = [];
   const evidence = new Map<string, EvidenceRecord>();
+  let evidenceRefreshedAt: Date | null = null;
   const snapshots: SelectionSnapshot[] = [];
 
   return {
@@ -53,6 +55,9 @@ function fakePersistence(): {
     },
     ranked,
     evidence,
+    get evidenceRefreshedAt() {
+      return evidenceRefreshedAt;
+    },
     snapshots,
     persistence: {
       getRun: async () => null,
@@ -65,7 +70,8 @@ function fakePersistence(): {
         }
         return ids;
       },
-      persistEvidence: async (records) => {
+      persistEvidence: async (records, _productIds, _groups, refreshedAt) => {
+        evidenceRefreshedAt = refreshedAt;
         for (const [identity, record] of records) evidence.set(identity, record);
       },
       persistSelectionSnapshots: async (records) => {
@@ -136,6 +142,7 @@ test("Daily Feed persists official evidence and scores its confidence before ran
   }));
 
   assert.equal(fake.evidence.get("name:ai-item-1"), highConfidence);
+  assert.equal(fake.evidenceRefreshedAt, NOW);
   assert.equal(result.selected.find((group) => group.identity === "name:ai-item-1")?.score.evidenceConfidence, 1);
   assert.equal(fake.snapshots.length, 2);
   const snapshot = fake.snapshots.find((item) => item.productId === "product-name:ai-item-1");
@@ -205,4 +212,109 @@ test("a qualified archive rediscovery is selected and recorded as a rediscovery"
 
   assert.equal(result.selected[0]?.identity, "name:ai-item-99");
   assert.equal(fake.snapshots.find((snapshot) => snapshot.productId === "archive-product")?.rediscovery, true);
+});
+
+test("an archive-only product can qualify through newly refreshed official evidence", async () => {
+  const fake = fakePersistence();
+  const lastSelectedAt = new Date("2026-08-20T19:00:00.000Z");
+  const refreshedEvidence: EvidenceRecord = {
+    factualSummary: "A research assistant.", primaryUseCase: "research", audience: "teams", productType: "assistant",
+    officialEvidenceUrl: "https://item-99.example.com", supportingExcerpts: ["Official product summary."], confidence: "high", conflicts: [],
+  };
+  fake.persistence.loadArchiveRediscoveries = async () => [{
+    productId: "archive-product",
+    group: { identity: "name:ai-item-99", items: [candidate(99)] },
+    lastSelectedAt,
+    evidenceRefreshedAt: lastSelectedAt,
+    latestQualifyingMentionAt: lastSelectedAt,
+  }];
+
+  const result = await runDailyFeed({
+    ...dependencies({
+      candidates: [],
+      persistence: fake.persistence,
+      rank: async (groups) => groups.map((group) => group.identity),
+    }),
+    enrichEvidence: async (groups) => new Map(groups.map((group) => [group.identity, refreshedEvidence])),
+  });
+
+  assert.equal(result.selected[0]?.identity, "name:ai-item-99");
+  assert.equal(fake.snapshots.find((snapshot) => snapshot.productId === "archive-product")?.rediscovery, true);
+  assert.equal(fake.evidenceRefreshedAt, NOW);
+});
+
+test("archive-only official refreshes are capped to the daily rediscovery budget", async () => {
+  const fake = fakePersistence();
+  const refreshedEvidence: EvidenceRecord = {
+    factualSummary: "A research assistant.", primaryUseCase: "research", audience: "teams", productType: "assistant",
+    officialEvidenceUrl: "https://example.com", supportingExcerpts: ["Official product summary."], confidence: "high", conflicts: [],
+  };
+  const storedEvidence: EvidenceRecord = {
+    factualSummary: "A previously verified research assistant.", primaryUseCase: "research", audience: "teams", productType: "assistant",
+    officialEvidenceUrl: "https://verified.example.com", supportingExcerpts: ["Previously accepted official summary."], confidence: "high", conflicts: [],
+  };
+  const archives = [1, 2, 3, 4].map((index) => {
+    const lastSelectedAt = new Date(`2026-08-${String(10 + index).padStart(2, "0")}T19:00:00.000Z`);
+    return {
+      productId: `archive-product-${index}`,
+      group: { identity: `name:ai-item-${index + 90}`, items: [candidate(index + 90)] },
+      lastSelectedAt,
+      evidenceRefreshedAt: index === 4 ? new Date("2026-09-01T19:00:00.000Z") : lastSelectedAt,
+      latestQualifyingMentionAt: lastSelectedAt,
+      evidence: index === 4 ? storedEvidence : null,
+    };
+  });
+  fake.persistence.loadArchiveRediscoveries = async () => archives;
+  let refreshedIdentities: string[] = [];
+
+  const result = await runDailyFeed({
+    ...dependencies({
+      candidates: [],
+      persistence: fake.persistence,
+      rank: async (groups) => [...groups].sort((left, right) => Number(right.identity.endsWith("94")) - Number(left.identity.endsWith("94"))).map((group) => group.identity),
+    }),
+    enrichEvidence: async (groups) => {
+      refreshedIdentities = groups.map((group) => group.identity);
+      return new Map(groups.map((group) => [group.identity, refreshedEvidence]));
+    },
+  });
+
+  assert.equal(refreshedIdentities.length, 3);
+  assert.equal(result.selectedProducts, 3);
+  assert.equal(fake.snapshots.find((snapshot) => snapshot.productId === "archive-product-4")?.acceptedEvidence.factualSummary, storedEvidence.factualSummary);
+});
+
+test("a previously selected current-batch product cannot bypass the rediscovery cooldown", async () => {
+  const fake = fakePersistence();
+  fake.persistence.loadArchiveRediscoveries = async () => [{
+    productId: "selected-product",
+    group: { identity: "name:ai-item-1", items: [candidate(1)] },
+    lastSelectedAt: new Date("2026-09-15T19:00:00.000Z"),
+    latestQualifyingMentionAt: new Date("2026-09-10T19:00:00.000Z"),
+  }];
+
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1)],
+    persistence: fake.persistence,
+    rank: async (groups) => groups.map((group) => group.identity),
+  }));
+
+  assert.equal(result.selected.some((group) => group.identity === "name:ai-item-1"), false);
+  assert.equal(fake.snapshots.some((snapshot) => snapshot.productId === "selected-product"), false);
+});
+
+test("snapshots retain low-confidence evidence and an honest two-clause reason when enrichment fails", async () => {
+  const fake = fakePersistence();
+
+  await runDailyFeed(dependencies({
+    candidates: [candidate(1)],
+    persistence: fake.persistence,
+    enrichEvidence: async () => { throw new Error("retrieval unavailable"); },
+    rank: async (groups) => groups.map((group) => group.identity),
+  }));
+
+  const snapshot = fake.snapshots[0]!;
+  assert.equal(snapshot.acceptedEvidence.confidence, "low");
+  assert.equal(snapshot.rankingReason, "Observed on Product Hunt; official product details remain incomplete.");
+  assert.equal(snapshot.rankingReason.split("; ").length, 2);
 });

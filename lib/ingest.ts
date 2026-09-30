@@ -9,7 +9,7 @@ import {
   type ScoredCandidateGroup,
 } from "@/lib/daily-ranking";
 import type { SourceCandidate, SourceKey } from "@/lib/domain";
-import { enrichOfficialEvidence, fetchBoundedOfficialEvidence, renderEvidenceBackedRankingReason, type EvidenceRecord } from "@/lib/evidence";
+import { enrichOfficialEvidence, fetchBoundedOfficialEvidence, hasRefreshableOfficialEvidence, renderEvidenceBackedRankingReason, type EvidenceRecord } from "@/lib/evidence";
 import { rankDailyCandidateIds } from "@/lib/llm-ranking";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
@@ -17,8 +17,10 @@ import { collectShowHn } from "@/lib/sources/hacker-news";
 import { collectProductHunt } from "@/lib/sources/product-hunt";
 import {
   applyRediscoveryAndSoftDiversity,
+  hasRediscoveryCooldownElapsed,
+  MAX_DAILY_REDISCOVERIES,
   qualifyRediscovery,
-  SELECTION_SNAPSHOT_RETENTION_DAYS,
+  selectionSnapshotRetentionCutoff,
   type RediscoveryCandidate,
   type SelectionSnapshot,
 } from "@/lib/selection-snapshots";
@@ -44,6 +46,7 @@ export type DailyCollectionResult = {
 
 export type ArchiveRediscoveryCandidate = RediscoveryCandidate & {
   group: CandidateGroup;
+  evidence?: EvidenceRecord | null;
 };
 
 export type DailyFeedPersistence = {
@@ -51,7 +54,7 @@ export type DailyFeedPersistence = {
   startRun: (input: { localDate: string; startedAt: Date }) => Promise<void>;
   /** Persist every eligible source mention before ranking, keyed by group identity. */
   persistCandidates: (groups: CandidateGroup[]) => Promise<Map<string, string>>;
-  persistEvidence: (records: Map<string, EvidenceRecord>, productIds: Map<string, string>) => Promise<void>;
+  persistEvidence: (records: Map<string, EvidenceRecord>, productIds: Map<string, string>, groups: CandidateGroup[], refreshedAt: Date) => Promise<void>;
   persistSelectionSnapshots: (records: SelectionSnapshot[]) => Promise<void>;
   loadArchiveRediscoveries: () => Promise<ArchiveRediscoveryCandidate[]>;
   setDailyRanks: (entries: { identity: string; rank: number }[], productIds: Map<string, string>) => Promise<void>;
@@ -122,6 +125,52 @@ function evidenceConfidenceValue(record: EvidenceRecord | undefined) {
   return record.confidence === "high" ? 1 : record.confidence === "medium" ? 0.6 : 0.25;
 }
 
+function evidenceRecordFromStored(record: typeof productEvidence.$inferSelect): EvidenceRecord {
+  const confidence = record.confidence === "high" || record.confidence === "medium" ? record.confidence : "low";
+  const conflicts = record.conflicts.filter((field): field is EvidenceRecord["conflicts"][number] =>
+    field === "factualSummary" || field === "primaryUseCase" || field === "audience" || field === "productType",
+  );
+  return {
+    factualSummary: record.factualSummary,
+    primaryUseCase: record.primaryUseCase,
+    audience: record.audience,
+    productType: record.productType,
+    officialEvidenceUrl: record.officialEvidenceUrl,
+    supportingExcerpts: record.supportingExcerpts,
+    confidence,
+    conflicts,
+  };
+}
+
+function incompleteEvidenceRecord(group: CandidateGroup): EvidenceRecord {
+  const canonicalUrl = group.items.find((candidate) => candidate.websiteUrl)?.websiteUrl || null;
+  return {
+    factualSummary: null,
+    primaryUseCase: null,
+    audience: null,
+    productType: null,
+    officialEvidenceUrl: canonicalUrl,
+    supportingExcerpts: [],
+    confidence: "low",
+    conflicts: [],
+  };
+}
+
+function rankingReasonFor(record: EvidenceRecord, group: CandidateGroup) {
+  return renderEvidenceBackedRankingReason(record, group.items.map((item) => item.sourceName));
+}
+
+function similarityTokensFor(record: EvidenceRecord | undefined, group: CandidateGroup) {
+  const text = [
+    ...group.items.flatMap((item) => [item.name, item.description]),
+    record?.productType,
+    record?.factualSummary,
+    record?.primaryUseCase,
+  ].filter((value): value is string => Boolean(value)).join(" ").toLowerCase();
+  const stopWords = new Set(["about", "and", "for", "from", "into", "its", "that", "the", "this", "with"]);
+  return [...new Set(text.match(/[a-z0-9]{2,}/g) ?? [])].filter((token) => !stopWords.has(token));
+}
+
 function officialGitHubRepository(group: CandidateGroup) {
   for (const candidate of group.items) for (const url of [candidate.websiteUrl, candidate.sourceUrl]) {
     try {
@@ -185,22 +234,48 @@ export async function runDailyFeed(
     // This deliberately precedes shortlist construction and provider ranking:
     // unselected eligible products and mentions remain part of the archive.
     const productIds = await dependencies.persistence.persistCandidates(currentGroups);
-    const rediscoveryByIdentity = new Map<string, ArchiveRediscoveryCandidate>();
-    for (const archive of await dependencies.persistence.loadArchiveRediscoveries()) {
-      if (!qualifyRediscovery(archive, startedAt).qualified) continue;
-      rediscoveryByIdentity.set(archive.group.identity, archive);
-      productIds.set(archive.group.identity, archive.productId);
-    }
-    const groups = [...currentGroups, ...[...rediscoveryByIdentity.values()]
-      .map((archive) => archive.group)
-      .filter((archive) => !currentGroups.some((group) => group.identity === archive.identity))];
-    let evidence = new Map<string, EvidenceRecord>();
+    const archiveCandidates = await dependencies.persistence.loadArchiveRediscoveries();
+    const previouslySelected = new Map(archiveCandidates.map((archive) => [archive.group.identity, archive]));
+    const cooldownReadyArchives = archiveCandidates
+      .filter((archive) => hasRediscoveryCooldownElapsed(archive.lastSelectedAt, startedAt))
+      .sort((left, right) => left.lastSelectedAt!.getTime() - right.lastSelectedAt!.getTime() || left.productId.localeCompare(right.productId))
+      .slice(0, MAX_DAILY_REDISCOVERIES);
+    const archiveRefreshIdentities = new Set(cooldownReadyArchives.map((archive) => archive.group.identity));
+    const groupsToEnrich = [
+      ...currentGroups.filter((group) => !previouslySelected.has(group.identity) || archiveRefreshIdentities.has(group.identity)),
+      ...cooldownReadyArchives.map((archive) => archive.group).filter((archive) => !currentGroups.some((group) => group.identity === archive.identity)),
+    ];
+    const evidence = new Map<string, EvidenceRecord>();
+    for (const archive of archiveCandidates) if (archive.evidence) evidence.set(archive.group.identity, archive.evidence);
+    const refreshedEvidenceByIdentity = new Map<string, EvidenceRecord>();
     try {
-      evidence = dependencies.enrichEvidence ? await dependencies.enrichEvidence(groups) : await enrichProductionEvidence(groups);
+      const refreshedEvidence = dependencies.enrichEvidence ? await dependencies.enrichEvidence(groupsToEnrich) : await enrichProductionEvidence(groupsToEnrich);
+      for (const [identity, record] of refreshedEvidence) {
+        if (!hasRefreshableOfficialEvidence(record)) continue;
+        evidence.set(identity, record);
+        refreshedEvidenceByIdentity.set(identity, record);
+      }
     } catch {
       // Retrieval is optional evidence improvement; score conservatively if it fails.
     }
-    await dependencies.persistence.persistEvidence(evidence, productIds);
+    for (const group of groupsToEnrich) if (!evidence.has(group.identity)) evidence.set(group.identity, incompleteEvidenceRecord(group));
+
+    const rediscoveryByIdentity = new Map<string, ArchiveRediscoveryCandidate>();
+    for (const archive of archiveCandidates) {
+      const refreshedEvidence = refreshedEvidenceByIdentity.get(archive.group.identity);
+      const candidate = {
+        ...archive,
+        evidenceRefreshedAt: refreshedEvidence && hasRefreshableOfficialEvidence(refreshedEvidence) ? startedAt : archive.evidenceRefreshedAt,
+      };
+      if (!qualifyRediscovery(candidate, startedAt).qualified) continue;
+      rediscoveryByIdentity.set(archive.group.identity, archive);
+      productIds.set(archive.group.identity, archive.productId);
+    }
+    const groups = [...currentGroups.filter((group) => !previouslySelected.has(group.identity) || rediscoveryByIdentity.has(group.identity)), ...[...rediscoveryByIdentity.values()]
+      .map((archive) => archive.group)
+      .filter((archive) => !currentGroups.some((group) => group.identity === archive.identity))];
+    for (const group of groups) if (!evidence.has(group.identity)) evidence.set(group.identity, incompleteEvidenceRecord(group));
+    await dependencies.persistence.persistEvidence(refreshedEvidenceByIdentity, productIds, groupsToEnrich, startedAt);
     const shortlist = candidateShortlist(groups, {
       now: startedAt,
       evidenceConfidence: (group) => evidenceConfidenceValue(evidence.get(group.identity)) ?? coldStartEvidenceConfidence(group),
@@ -223,7 +298,7 @@ export async function runDailyFeed(
     const selected = applyRediscoveryAndSoftDiversity(orderedCandidates.map((group) => ({
       productId: group.identity,
       deterministicScore: group.score.preScore,
-      similarityKey: evidence.get(group.identity)?.productType || group.items[0]?.category || null,
+      similarityTokens: similarityTokensFor(evidence.get(group.identity), group),
       rediscovery: rediscoveryByIdentity.has(group.identity),
     })), MAX_DAILY_FEED).map((candidate) => orderedCandidates.find((group) => group.identity === candidate.productId)!);
 
@@ -231,11 +306,11 @@ export async function runDailyFeed(
       selected.map((group, index) => ({ identity: group.identity, rank: index + 1 })),
       productIds,
     );
-    const snapshots = selected.flatMap((group, index) => {
+    const snapshots = selected.map((group, index) => {
       const productId = productIds.get(group.identity);
-      if (!productId) return [];
+      if (!productId) throw new Error(`Could not persist selected product ${group.identity}`);
       const evidenceRecord = evidence.get(group.identity);
-      return [{
+      return {
         productId,
         selectedAt: startedAt,
         rank: index + 1,
@@ -244,10 +319,10 @@ export async function runDailyFeed(
         sourceRelativeTraction: group.score.sourceRelativeTraction,
         deterministicScore: group.score.preScore,
         acceptedEvidence: evidenceRecord ? structuredClone(evidenceRecord) as Record<string, unknown> : {},
-        rankingReason: evidenceRecord ? renderEvidenceBackedRankingReason(evidenceRecord) : null,
+        rankingReason: evidenceRecord ? rankingReasonFor(evidenceRecord, group) : null,
         rediscovery: rediscoveryByIdentity.has(group.identity),
         provenance: ranking === "provider" ? "model" as const : "fallback" as const,
-      }];
+      };
     });
     await dependencies.persistence.persistSelectionSnapshots(snapshots);
     const sourceResults = Object.fromEntries(
@@ -366,9 +441,12 @@ function productionPersistence(): DailyFeedPersistence {
       }
       return ids;
     },
-    persistEvidence: async (records, productIds) => {
-      const refreshedAt = new Date();
+    persistEvidence: async (records, productIds, groups, refreshedAt) => {
+      const groupByIdentity = new Map(groups.map((group) => [group.identity, group]));
       for (const [identity, record] of records) {
+        // A synthesized incomplete record means retrieval failed or yielded no
+        // official material; keep any earlier official evidence and timestamp.
+        if (!hasRefreshableOfficialEvidence(record)) continue;
         const productId = productIds.get(identity);
         if (!productId) continue;
         await db.insert(productEvidence).values({
@@ -381,7 +459,7 @@ function productionPersistence(): DailyFeedPersistence {
           supportingExcerpts: record.supportingExcerpts,
           confidence: record.confidence,
           conflicts: record.conflicts,
-          rankingReason: renderEvidenceBackedRankingReason(record),
+          rankingReason: groupByIdentity.get(identity) ? rankingReasonFor(record, groupByIdentity.get(identity)!) : null,
           refreshedAt,
         }).onConflictDoUpdate({
           target: productEvidence.productId,
@@ -394,7 +472,7 @@ function productionPersistence(): DailyFeedPersistence {
             supportingExcerpts: record.supportingExcerpts,
             confidence: record.confidence,
             conflicts: record.conflicts,
-            rankingReason: renderEvidenceBackedRankingReason(record),
+            rankingReason: groupByIdentity.get(identity) ? rankingReasonFor(record, groupByIdentity.get(identity)!) : null,
             refreshedAt,
           },
         });
@@ -461,6 +539,7 @@ function productionPersistence(): DailyFeedPersistence {
           lastSelectedAt,
           evidenceRefreshedAt: evidence?.refreshedAt || null,
           latestQualifyingMentionAt,
+          evidence: evidence ? evidenceRecordFromStored(evidence) : null,
         }];
       });
     },
@@ -499,7 +578,7 @@ async function collectProductionSources(since: Date): Promise<DailyCollectionRes
 export async function cleanupExpiredSelectionSnapshots(now = new Date()) {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL is not configured");
-  const cutoff = new Date(now.getTime() - SELECTION_SNAPSHOT_RETENTION_DAYS * 86_400_000);
+  const cutoff = selectionSnapshotRetentionCutoff(now);
   const deleted = await db.delete(selectionSnapshots).where(lt(selectionSnapshots.selectedAt, cutoff)).returning({ id: selectionSnapshots.id });
   return deleted.length;
 }

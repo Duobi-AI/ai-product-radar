@@ -63,16 +63,26 @@ test("a prior Daily Feed product rediscovery needs a 30-day absence and new qual
 
 test("rediscovery and diversity policies preserve the highest order without quotas", () => {
   const selected = applyRediscoveryAndSoftDiversity([
-    { productId: "fresh-a", deterministicScore: 0.95, similarityKey: "assistants", rediscovery: false },
-    { productId: "rediscovery-a", deterministicScore: 0.94, similarityKey: "research", rediscovery: true },
-    { productId: "fresh-b", deterministicScore: 0.93, similarityKey: "assistants", rediscovery: false },
-    { productId: "rediscovery-b", deterministicScore: 0.92, similarityKey: "models", rediscovery: true },
-    { productId: "rediscovery-c", deterministicScore: 0.91, similarityKey: "coding", rediscovery: true },
-    { productId: "rediscovery-d", deterministicScore: 0.9, similarityKey: "video", rediscovery: true },
+    { productId: "fresh-a", deterministicScore: 0.95, similarityTokens: ["assistant"], rediscovery: false },
+    { productId: "rediscovery-a", deterministicScore: 0.94, similarityTokens: ["research"], rediscovery: true },
+    { productId: "fresh-b", deterministicScore: 0.93, similarityTokens: ["assistant"], rediscovery: false },
+    { productId: "rediscovery-b", deterministicScore: 0.92, similarityTokens: ["models"], rediscovery: true },
+    { productId: "rediscovery-c", deterministicScore: 0.91, similarityTokens: ["coding"], rediscovery: true },
+    { productId: "rediscovery-d", deterministicScore: 0.9, similarityTokens: ["video"], rediscovery: true },
   ], 5);
 
   assert.deepEqual(selected.map((item) => item.productId), ["fresh-a", "rediscovery-a", "rediscovery-b", "rediscovery-c", "fresh-b"]);
   assert.equal(selected.filter((item) => item.rediscovery).length, 3);
+});
+
+test("soft diversity defers only lexically near-identical products with comparable scores", () => {
+  const selected = applyRediscoveryAndSoftDiversity([
+    { productId: "research-one", deterministicScore: 0.9, similarityTokens: ["ai", "research", "assistant", "papers", "citations"], rediscovery: false },
+    { productId: "near-duplicate", deterministicScore: 0.89, similarityTokens: ["ai", "research", "assistant", "papers", "citations"], rediscovery: false },
+    { productId: "same-category-different-product", deterministicScore: 0.88, similarityTokens: ["ai", "coding", "agent", "repository", "tests"], rediscovery: false },
+  ], 2);
+
+  assert.deepEqual(selected.map((item) => item.productId), ["research-one", "same-category-different-product"]);
 });
 
 test("selection snapshots are immutable and expire after one year", async () => {
