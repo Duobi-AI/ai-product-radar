@@ -50,7 +50,7 @@ test("complete Evidence Records skip model extraction and budget reservation", a
 
   assert.deepEqual(result, record);
   assert.equal(extractCalls, 0);
-  assert.equal(budget.monthlyUsage("2026-09"), 0);
+  assert.equal(budget.monthlyReservedMicros("2026-09"), 0);
 });
 
 test("incomplete records without official excerpts do not call the model", async () => {
@@ -108,7 +108,7 @@ test("incomplete official evidence is extracted, fills only missing fields, and 
   assert.equal(result.primaryUseCase, "research synthesis");
   assert.equal(result.audience, "product teams");
   assert.equal(result.confidence, "high");
-  assert.equal(budget.monthlyUsage("2026-09"), budget.requests[0]?.estimatedMicros);
+  assert.equal(budget.monthlyReservedMicros("2026-09"), budget.requests[0]?.estimatedMicros);
   assert.equal(budget.requests[0]?.inputTokens, 410);
   assert.equal(budget.requests[0]?.outputTokens, 72);
 });
@@ -198,18 +198,20 @@ test("invalid output, model errors, and exhausted budget preserve deterministic 
   );
   assert.deepEqual(exhausted, base);
   assert.equal(calls, 0);
-  assert.equal(exhaustedBudget.monthlyUsage("2026-09"), 0);
+  assert.equal(exhaustedBudget.monthlyReservedMicros("2026-09"), 0);
 });
 
 test("budget reservation counts estimates before provider execution and is scoped by month", async () => {
   const budget = new InMemoryDiscoveryBudgetRepository({ capMicros: 50 });
+  const malformedEstimate = await budget.reserve({ month: "2026-09", operation: "evidence_enrichment", estimatedMicros: 1.5 });
   const first = await budget.reserve({ month: "2026-09", operation: "evidence_enrichment", estimatedMicros: 30 });
   const overLimit = await budget.reserve({ month: "2026-09", operation: "ranking", estimatedMicros: 21 });
   const nextMonth = await budget.reserve({ month: "2026-10", operation: "evidence_enrichment", estimatedMicros: 30 });
 
+  assert.equal(malformedEstimate, null);
   assert.ok(first);
   assert.equal(overLimit, null);
   assert.ok(nextMonth);
-  assert.equal(budget.monthlyUsage("2026-09"), 30);
-  assert.equal(budget.monthlyUsage("2026-10"), 30);
+  assert.equal(budget.monthlyReservedMicros("2026-09"), 30);
+  assert.equal(budget.monthlyReservedMicros("2026-10"), 30);
 });

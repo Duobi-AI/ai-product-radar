@@ -13,7 +13,7 @@ import {
 import type { SourceCandidate } from "../lib/domain";
 import type { SelectionSnapshot } from "../lib/selection-snapshots";
 import { enrichEvidenceWithDeepSeek, type EvidenceRecord } from "../lib/evidence";
-import { InMemoryDiscoveryBudgetRepository } from "../lib/discovery-budget";
+import { InMemoryDiscoveryBudgetRepository, type DiscoveryBudgetRepository } from "../lib/discovery-budget";
 
 const NOW = new Date("2026-09-29T19:00:00.000Z");
 
@@ -93,6 +93,7 @@ function dependencies(input: {
   rank: DailyFeedDependencies["rank"];
   persistence: DailyFeedPersistence;
   enrichEvidence?: DailyFeedDependencies["enrichEvidence"];
+  discoveryBudget?: DiscoveryBudgetRepository;
 }): DailyFeedDependencies {
   return {
     now: () => NOW,
@@ -100,6 +101,7 @@ function dependencies(input: {
     persistence: input.persistence,
     rank: input.rank,
     enrichEvidence: input.enrichEvidence,
+    discoveryBudget: input.discoveryBudget,
   };
 }
 
@@ -380,5 +382,50 @@ test("Daily Feed completes with the deterministic Evidence Record when the month
   assert.equal(modelCalls, 0);
   assert.deepEqual(fake.evidence.get("name:ai-item-1"), baseRecord);
   assert.equal(result.selected[0]?.score.evidenceConfidence, 0.25);
+  assert.ok(fake.completed);
+});
+
+test("Daily Feed reserves budget before ranking and records provider token usage", async () => {
+  const fake = fakePersistence();
+  const budget = new InMemoryDiscoveryBudgetRepository();
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1), candidate(2)],
+    persistence: fake.persistence,
+    discoveryBudget: budget,
+    rank: async (groups) => {
+      assert.equal(budget.requests.length, 1);
+      assert.equal(budget.requests[0]?.operation, "ranking");
+      return {
+        productIds: groups.map((group) => group.identity),
+        usage: { inputTokens: 150, outputTokens: 40 },
+      };
+    },
+  }));
+
+  assert.equal(result.ranking, "provider");
+  assert.equal(budget.requests[0]?.outcome, "completed");
+  assert.equal(budget.requests[0]?.inputTokens, 150);
+  assert.equal(budget.requests[0]?.outputTokens, 40);
+});
+
+test("Daily Feed skips model ranking and completes deterministically when the monthly budget is exhausted", async () => {
+  const fake = fakePersistence();
+  const budget = new InMemoryDiscoveryBudgetRepository({ capMicros: 0 });
+  let modelCalls = 0;
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1), candidate(2)],
+    persistence: fake.persistence,
+    discoveryBudget: budget,
+    rank: async (groups) => {
+      modelCalls += 1;
+      return groups.map((group) => group.identity);
+    },
+  }));
+
+  assert.equal(modelCalls, 0);
+  assert.equal(result.status, "complete");
+  assert.equal(result.ranking, "fallback");
+  assert.deepEqual(result.selected.map((group) => group.identity), ["name:ai-item-2", "name:ai-item-1"]);
+  assert.equal(budget.requests.length, 0);
   assert.ok(fake.completed);
 });

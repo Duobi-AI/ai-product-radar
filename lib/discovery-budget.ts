@@ -12,8 +12,8 @@ export type DiscoveryOperation = "evidence_enrichment" | "ranking";
 export type DiscoveryRequestOutcome = "completed" | "invalid" | "failed";
 
 export type DiscoveryProviderUsage = {
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
 };
 
 export type DiscoveryBudgetReservation = {
@@ -41,6 +41,10 @@ export function discoveryBudgetMonth(date: Date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+export function isValidDiscoveryReservationMicros(amount: number, capMicros = MONTHLY_DISCOVERY_BUDGET_MICROS) {
+  return Number.isSafeInteger(amount) && amount > 0 && amount <= capMicros;
+}
+
 export function estimateDiscoveryRequestMicros(input: {
   inputCharacters: number;
   maximumOutputTokens: number;
@@ -62,8 +66,9 @@ export class InMemoryDiscoveryBudgetRepository implements DiscoveryBudgetReposit
 
   async reserve(input: Omit<DiscoveryBudgetReservation, "id">) {
     const capMicros = this.options.capMicros ?? MONTHLY_DISCOVERY_BUDGET_MICROS;
-    const alreadyReserved = this.monthlyUsage(input.month);
-    if (input.estimatedMicros <= 0 || alreadyReserved + input.estimatedMicros > capMicros) return null;
+    const alreadyReserved = this.monthlyReservedMicros(input.month);
+    if (!isValidDiscoveryReservationMicros(input.estimatedMicros, capMicros)
+      || alreadyReserved + input.estimatedMicros > capMicros) return null;
 
     const reservation: DiscoveryBudgetRequest = {
       ...input,
@@ -87,7 +92,7 @@ export class InMemoryDiscoveryBudgetRepository implements DiscoveryBudgetReposit
     request.outputTokens = input.usage?.outputTokens ?? null;
   }
 
-  monthlyUsage(month: string) {
+  monthlyReservedMicros(month: string) {
     return this.requests
       .filter((request) => request.month === month)
       .reduce((total, request) => total + request.estimatedMicros, 0);

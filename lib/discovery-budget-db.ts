@@ -1,14 +1,18 @@
 import { eq, sql } from "drizzle-orm";
 import { discoveryBudgetMonths, discoveryBudgetRequests } from "@/db/schema";
 import { getDb } from "@/lib/db";
-import { MONTHLY_DISCOVERY_BUDGET_MICROS, type DiscoveryBudgetRepository } from "@/lib/discovery-budget";
+import {
+  isValidDiscoveryReservationMicros,
+  MONTHLY_DISCOVERY_BUDGET_MICROS,
+  type DiscoveryBudgetRepository,
+} from "@/lib/discovery-budget";
 
 type Database = NonNullable<ReturnType<typeof getDb>>;
 
 export function createDrizzleDiscoveryBudgetRepository(db: Database): DiscoveryBudgetRepository {
   return {
     reserve: async (input) => {
-      if (input.estimatedMicros <= 0 || input.estimatedMicros > MONTHLY_DISCOVERY_BUDGET_MICROS) return null;
+      if (!isValidDiscoveryReservationMicros(input.estimatedMicros)) return null;
       const result = await db.execute(sql`
         WITH reserved AS (
           INSERT INTO ${discoveryBudgetMonths} (month, reserved_micros)

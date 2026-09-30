@@ -1,6 +1,13 @@
 import { eq, lt } from "drizzle-orm";
 import { dailyRuns, productEvidence, productSources, products, selectionSnapshots } from "@/db/schema";
 import { createDrizzleDiscoveryBudgetRepository } from "@/lib/discovery-budget-db";
+import {
+  discoveryBudgetMonth,
+  estimateDiscoveryRequestMicros,
+  type DiscoveryBudgetRepository,
+  type DiscoveryBudgetReservation,
+  type DiscoveryProviderUsage,
+} from "@/lib/discovery-budget";
 import { getDb } from "@/lib/db";
 import { identityForCandidate, prepareDailyCandidates, type CandidateGroup } from "@/lib/daily-candidates";
 import {
@@ -19,7 +26,7 @@ import {
   renderEvidenceBackedRankingReason,
   type EvidenceRecord,
 } from "@/lib/evidence";
-import { rankDailyCandidateIds } from "@/lib/llm-ranking";
+import { rankDailyCandidateIdsWithUsage } from "@/lib/llm-ranking";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
@@ -78,9 +85,13 @@ export type DailyFeedDependencies = {
   now: () => Date;
   collect: (since: Date) => Promise<DailyCollectionResult[]>;
   persistence: DailyFeedPersistence;
+  discoveryBudget?: DiscoveryBudgetRepository;
   enrichEvidence?: (groups: CandidateGroup[]) => Promise<Map<string, EvidenceRecord>>;
-  /** Return only supplied shortlist identities, in desired feed order. */
-  rank: (shortlist: ScoredCandidateGroup[]) => Promise<readonly string[]>;
+  /** Return only supplied shortlist identities, in desired feed order, with provider usage when available. */
+  rank: (shortlist: ScoredCandidateGroup[]) => Promise<readonly string[] | {
+    productIds: readonly string[];
+    usage?: DiscoveryProviderUsage;
+  }>;
 };
 
 export type DailyFeedResult = {
@@ -130,6 +141,19 @@ function isDailyRunStatus(status: string): status is DailyRunStatus {
 
 function fallbackOrder(shortlist: ScoredCandidateGroup[]) {
   return shortlist.slice(0, MAX_DAILY_FEED);
+}
+
+async function recordBudgetedRankingUsage(
+  budget: DiscoveryBudgetRepository | undefined,
+  reservation: DiscoveryBudgetReservation | null,
+  input: { outcome: "completed" | "invalid" | "failed"; usage?: DiscoveryProviderUsage },
+) {
+  if (!budget || !reservation) return;
+  try {
+    await budget.recordUsage(reservation, input);
+  } catch {
+    // The estimate remains reserved even if the provider usage receipt cannot be written.
+  }
 }
 
 function evidenceConfidenceValue(record: EvidenceRecord | undefined) {
@@ -307,14 +331,38 @@ export async function runDailyFeed(
     });
     let orderedCandidates: ScoredCandidateGroup[];
     let ranking: DailyFeedResult["ranking"] = "provider";
+    let rankingReservation: DiscoveryBudgetReservation | null = null;
+    let rankingOutcomeRecorded = false;
     try {
-      const rankedIds = validateRanking(await dependencies.rank(shortlist), new Set(shortlist.map((group) => group.identity)));
+      if (dependencies.discoveryBudget && shortlist.length > 1) {
+        rankingReservation = await dependencies.discoveryBudget.reserve({
+          month: discoveryBudgetMonth(startedAt),
+          operation: "ranking",
+          estimatedMicros: estimateDiscoveryRequestMicros({
+            inputCharacters: JSON.stringify(shortlist).length,
+            maximumOutputTokens: 1200,
+          }),
+        });
+        if (!rankingReservation) throw new Error("Monthly Discovery Budget exhausted");
+      }
+      const response = await dependencies.rank(shortlist);
+      const ids = "productIds" in response ? response.productIds : response;
+      const usage = "productIds" in response ? response.usage : undefined;
+      const rankedIds = validateRanking(ids, new Set(shortlist.map((group) => group.identity)));
+      await recordBudgetedRankingUsage(dependencies.discoveryBudget, rankingReservation, {
+        outcome: rankedIds ? "completed" : "invalid",
+        usage,
+      });
+      rankingOutcomeRecorded = true;
       if (!rankedIds) throw new Error("Ranking output did not contain unique shortlist identities");
       const byIdentity = new Map(shortlist.map((group) => [group.identity, group]));
       const modelOrder = rankedIds.map((id) => byIdentity.get(id)!);
       const remaining = shortlist.filter((group) => !rankedIds.includes(group.identity));
       orderedCandidates = [...modelOrder, ...remaining];
     } catch {
+      if (!rankingOutcomeRecorded) {
+        await recordBudgetedRankingUsage(dependencies.discoveryBudget, rankingReservation, { outcome: "failed" });
+      }
       // Ranking is optional refinement; a provider error or invalid response
       // must never turn a successfully collected run into a failed one.
       ranking = "fallback";
@@ -611,10 +659,13 @@ export async function cleanupExpiredSelectionSnapshots(now = new Date()) {
 }
 
 export async function runDailyIngestion(options: { force?: boolean } = {}) {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_URL is not configured");
   return runDailyFeed({
     now: () => new Date(),
     collect: collectProductionSources,
     persistence: productionPersistence(),
-    rank: rankDailyCandidateIds,
+    discoveryBudget: createDrizzleDiscoveryBudgetRepository(db),
+    rank: rankDailyCandidateIdsWithUsage,
   }, options);
 }
