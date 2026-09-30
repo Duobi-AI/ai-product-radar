@@ -71,6 +71,7 @@ function fakePersistence(): {
       persistSelectionSnapshots: async (records) => {
         snapshots.push(...records);
       },
+      loadArchiveRediscoveries: async () => [],
       setDailyRanks: async (entries) => {
         ranked.push(...entries);
       },
@@ -184,4 +185,24 @@ test("Daily Feed completes with deterministic fallback after provider failure or
     assert.deepEqual(result.selected.map((group) => group.identity), ["name:ai-item-9", "name:ai-item-3", "name:ai-item-1"]);
     assert.ok(fake.completed);
   }
+});
+
+test("a qualified archive rediscovery is selected and recorded as a rediscovery", async () => {
+  const fake = fakePersistence();
+  const archive = candidate(99, { announcedAt: new Date("2026-07-01T19:00:00.000Z") });
+  fake.persistence.loadArchiveRediscoveries = async () => [{
+    productId: "archive-product",
+    group: { identity: "name:ai-item-99", items: [archive] },
+    lastSelectedAt: new Date("2026-08-01T19:00:00.000Z"),
+    evidenceRefreshedAt: new Date("2026-09-20T19:00:00.000Z"),
+  }];
+
+  const result = await runDailyFeed(dependencies({
+    candidates: [candidate(1)],
+    persistence: fake.persistence,
+    rank: async (groups) => ["name:ai-item-99", ...groups.map((group) => group.identity).filter((id) => id !== "name:ai-item-99")],
+  }));
+
+  assert.equal(result.selected[0]?.identity, "name:ai-item-99");
+  assert.equal(fake.snapshots.find((snapshot) => snapshot.productId === "archive-product")?.rediscovery, true);
 });
