@@ -28,6 +28,7 @@ import {
   type EvidenceRecord,
 } from "@/lib/evidence";
 import { rankGlobalDailyCandidateIdsWithUsage } from "@/lib/llm-ranking";
+import { currentGlobalRankingReleaseDecision, type GlobalRankingReleaseDecision } from "@/lib/global-ranking-evaluation";
 import { collectGitHub } from "@/lib/sources/github";
 import { collectHuggingFace } from "@/lib/sources/hugging-face";
 import { collectShowHn } from "@/lib/sources/hacker-news";
@@ -87,6 +88,8 @@ export type DailyFeedDependencies = {
   collect: (since: Date) => Promise<DailyCollectionResult[]>;
   persistence: DailyFeedPersistence;
   discoveryBudget: DiscoveryBudgetRepository;
+  /** Release decision is computed from the fixed scorecard and explicit operator approval. */
+  releaseDecision: GlobalRankingReleaseDecision;
   enrichEvidence?: (groups: CandidateGroup[]) => Promise<Map<string, EvidenceRecord>>;
   /** Return only supplied shortlist identities, in desired feed order, with provider usage when available. */
   rank: (shortlist: ScoredCandidateGroup[], evidence: ReadonlyMap<string, EvidenceRecord>) => Promise<readonly string[] | {
@@ -104,6 +107,7 @@ export type DailyFeedResult = {
   sources: Record<string, SourceResult>;
   selected: ScoredCandidateGroup[];
   ranking: "provider" | "fallback";
+  releaseDecision: GlobalRankingReleaseDecision;
 };
 
 function pacificDate(date: Date) {
@@ -249,6 +253,7 @@ export async function runDailyFeed(
       sources: {},
       selected: [],
       ranking: "fallback",
+      releaseDecision: dependencies.releaseDecision,
     };
   }
 
@@ -271,24 +276,26 @@ export async function runDailyFeed(
       .sort((left, right) => left.lastSelectedAt!.getTime() - right.lastSelectedAt!.getTime() || left.productId.localeCompare(right.productId))
       .slice(0, MAX_DAILY_REDISCOVERIES);
     const archiveRefreshIdentities = new Set(cooldownReadyArchives.map((archive) => archive.group.identity));
-    const groupsToEnrich = [
+    const groupsToEnrich = dependencies.releaseDecision.enabled ? [
       ...currentGroups.filter((group) => !previouslySelected.has(group.identity) || archiveRefreshIdentities.has(group.identity)),
       ...cooldownReadyArchives.map((archive) => archive.group).filter((archive) => !currentGroups.some((group) => group.identity === archive.identity)),
-    ];
+    ] : [];
     const evidence = new Map<string, EvidenceRecord>();
     for (const archive of archiveCandidates) if (archive.evidence) evidence.set(archive.group.identity, archive.evidence);
     const refreshedEvidenceByIdentity = new Map<string, EvidenceRecord>();
-    try {
-      const refreshedEvidence = dependencies.enrichEvidence
-        ? await dependencies.enrichEvidence(groupsToEnrich)
-        : await enrichProductionEvidence(groupsToEnrich, dependencies.discoveryBudget);
-      for (const [identity, record] of refreshedEvidence) {
-        if (!hasRefreshableOfficialEvidence(record)) continue;
-        evidence.set(identity, record);
-        refreshedEvidenceByIdentity.set(identity, record);
+    if (dependencies.releaseDecision.enabled) {
+      try {
+        const refreshedEvidence = dependencies.enrichEvidence
+          ? await dependencies.enrichEvidence(groupsToEnrich)
+          : await enrichProductionEvidence(groupsToEnrich, dependencies.discoveryBudget);
+        for (const [identity, record] of refreshedEvidence) {
+          if (!hasRefreshableOfficialEvidence(record)) continue;
+          evidence.set(identity, record);
+          refreshedEvidenceByIdentity.set(identity, record);
+        }
+      } catch {
+        // Retrieval is optional evidence improvement; score conservatively if it fails.
       }
-    } catch {
-      // Retrieval is optional evidence improvement; score conservatively if it fails.
     }
     for (const group of groupsToEnrich) if (!evidence.has(group.identity)) evidence.set(group.identity, incompleteEvidenceRecord(group));
 
@@ -319,7 +326,7 @@ export async function runDailyFeed(
     let ranking: DailyFeedResult["ranking"] = "fallback";
     let rankingReservation: DiscoveryBudgetReservation | null = null;
     let rankingOutcomeRecorded = false;
-    if (shortlist.length > 1) {
+    if (dependencies.releaseDecision.enabled && shortlist.length > 1) {
       try {
         rankingReservation = await dependencies.discoveryBudget.reserve({
           month: discoveryBudgetMonth(dependencies.now()),
@@ -410,6 +417,7 @@ export async function runDailyFeed(
       sources: sourceResults,
       selected,
       ranking,
+      releaseDecision: dependencies.releaseDecision,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Daily collection failed";
@@ -650,11 +658,13 @@ export async function cleanupExpiredSelectionSnapshots(now = new Date()) {
 export async function runDailyIngestion(options: { force?: boolean } = {}) {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL is not configured");
+  const releaseDecision = currentGlobalRankingReleaseDecision();
   return runDailyFeed({
     now: () => new Date(),
     collect: collectProductionSources,
     persistence: productionPersistence(),
     discoveryBudget: createDrizzleDiscoveryBudgetRepository(db),
+    releaseDecision,
     rank: rankGlobalDailyCandidateIdsWithUsage,
   }, options);
 }

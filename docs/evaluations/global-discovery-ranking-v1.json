@@ -1,0 +1,337 @@
+{
+  "scorecard": {
+    "id": "gdr-91a449490f94b024",
+    "evaluatedAt": "2026-09-30T09:15:21.000Z",
+    "fixtureType": "representative",
+    "limitations": [
+      "Fixtures are synthetic representative examples, not captured production history.",
+      "Criterion ratings are explicit rubric assessments and require product review before approval."
+    ],
+    "sampleSize": 5,
+    "requiredPositiveCriteria": 4,
+    "positiveCriteria": [
+      "freshness",
+      "credibility",
+      "diversity",
+      "explanationAccuracy"
+    ],
+    "criteria": {
+      "freshness": {
+        "meanScore": 4.4,
+        "positive": true,
+        "assessments": [
+          {
+            "snapshotId": "9aadd7405d8cdaf4",
+            "score": 5,
+            "note": "Freshness component is 0.97 for this current-run observation."
+          },
+          {
+            "snapshotId": "6594f723d63538ad",
+            "score": 4,
+            "note": "Freshness component is 0.91 for this current-run observation."
+          },
+          {
+            "snapshotId": "6e33b6bc45b0ff1d",
+            "score": 4,
+            "note": "Freshness component is 0.87 for this current-run observation."
+          },
+          {
+            "snapshotId": "408bc35555e7b9b2",
+            "score": 4,
+            "note": "Freshness component is 0.83 for this current-run observation."
+          },
+          {
+            "snapshotId": "8dc7a3883692539e",
+            "score": 5,
+            "note": "Freshness component is 0.78; the snapshot marks this as a qualified rediscovery."
+          }
+        ]
+      },
+      "credibility": {
+        "meanScore": 4.4,
+        "positive": true,
+        "assessments": [
+          {
+            "snapshotId": "9aadd7405d8cdaf4",
+            "score": 5,
+            "note": "High-confidence official evidence includes a supporting excerpt."
+          },
+          {
+            "snapshotId": "6594f723d63538ad",
+            "score": 5,
+            "note": "High-confidence evidence links the claim to the official site."
+          },
+          {
+            "snapshotId": "6e33b6bc45b0ff1d",
+            "score": 4,
+            "note": "Official evidence supports the described meeting follow-up function."
+          },
+          {
+            "snapshotId": "408bc35555e7b9b2",
+            "score": 4,
+            "note": "The official excerpt supports image creation and reusable styles."
+          },
+          {
+            "snapshotId": "8dc7a3883692539e",
+            "score": 4,
+            "note": "Refreshed official evidence supports the broad data-cleanup description."
+          }
+        ]
+      },
+      "usefulness": {
+        "meanScore": 3.6,
+        "positive": false,
+        "assessments": [
+          {
+            "snapshotId": "9aadd7405d8cdaf4",
+            "score": 4,
+            "note": "Paper research is a concrete task for a named audience."
+          },
+          {
+            "snapshotId": "6594f723d63538ad",
+            "score": 4,
+            "note": "Pull request review is a concrete workflow for software teams."
+          },
+          {
+            "snapshotId": "6e33b6bc45b0ff1d",
+            "score": 3,
+            "note": "The product benefit is plausible, but differentiation is not clear in the excerpt."
+          },
+          {
+            "snapshotId": "408bc35555e7b9b2",
+            "score": 4,
+            "note": "Campaign asset creation is a specific design-team workflow."
+          },
+          {
+            "snapshotId": "8dc7a3883692539e",
+            "score": 3,
+            "note": "Dataset preparation is relevant, but the user benefit remains broad."
+          }
+        ]
+      },
+      "diversity": {
+        "meanScore": 4.4,
+        "positive": true,
+        "assessments": [
+          {
+            "snapshotId": "9aadd7405d8cdaf4",
+            "score": 4,
+            "note": "Paper research is distinct from the other sampled workflows."
+          },
+          {
+            "snapshotId": "6594f723d63538ad",
+            "score": 5,
+            "note": "Code review adds a software workflow distinct from the sample's other tasks."
+          },
+          {
+            "snapshotId": "6e33b6bc45b0ff1d",
+            "score": 4,
+            "note": "Meeting follow-up is distinct from research, coding, and image workflows."
+          },
+          {
+            "snapshotId": "408bc35555e7b9b2",
+            "score": 5,
+            "note": "Image generation adds a distinct modality and task to the sample."
+          },
+          {
+            "snapshotId": "8dc7a3883692539e",
+            "score": 4,
+            "note": "Data cleanup is distinct from the other sampled product workflows."
+          }
+        ]
+      },
+      "explanationAccuracy": {
+        "meanScore": 4.6,
+        "positive": true,
+        "assessments": [
+          {
+            "snapshotId": "9aadd7405d8cdaf4",
+            "score": 5,
+            "note": "The official excerpt supports both public reason clauses."
+          },
+          {
+            "snapshotId": "6594f723d63538ad",
+            "score": 5,
+            "note": "The official excerpt supports both public reason clauses."
+          },
+          {
+            "snapshotId": "6e33b6bc45b0ff1d",
+            "score": 4,
+            "note": "The source supports the meeting software claim and task result."
+          },
+          {
+            "snapshotId": "408bc35555e7b9b2",
+            "score": 5,
+            "note": "The source supports the image-creation and consistency claims."
+          },
+          {
+            "snapshotId": "8dc7a3883692539e",
+            "score": 4,
+            "note": "The official excerpt supports the cleanup and preparation claims."
+          }
+        ]
+      }
+    },
+    "snapshotReferences": [
+      {
+        "snapshotId": "9aadd7405d8cdaf4",
+        "productId": "product-research-assistant",
+        "snapshot": {
+          "productId": "product-research-assistant",
+          "selectedAt": "2026-09-29T19:00:00.000Z",
+          "rank": 1,
+          "freshness": 0.97,
+          "evidenceConfidence": 0.95,
+          "deterministicScore": 0.93,
+          "sourceRelativeTraction": 0.82,
+          "acceptedEvidence": {
+            "factualSummary": "Research assistant that summarizes technical papers and preserves citations.",
+            "primaryUseCase": "paper research",
+            "audience": "research teams",
+            "productType": "AI software",
+            "officialEvidenceUrl": "https://example.test/research-assistant",
+            "supportingExcerpts": [
+              "Summarize papers with cited sources and shared workspaces."
+            ],
+            "confidence": "high",
+            "conflicts": []
+          },
+          "rankingReason": "Officially described as a paper research assistant; it preserves cited sources.",
+          "rediscovery": false,
+          "rediscoveryReason": null,
+          "provenance": "fallback"
+        }
+      },
+      {
+        "snapshotId": "6594f723d63538ad",
+        "productId": "product-code-review",
+        "snapshot": {
+          "productId": "product-code-review",
+          "selectedAt": "2026-09-29T19:00:00.000Z",
+          "rank": 2,
+          "freshness": 0.91,
+          "evidenceConfidence": 0.9,
+          "deterministicScore": 0.88,
+          "sourceRelativeTraction": 0.76,
+          "acceptedEvidence": {
+            "factualSummary": "Code review assistant that identifies risky changes in pull requests.",
+            "primaryUseCase": "pull request review",
+            "audience": "software teams",
+            "productType": "AI software",
+            "officialEvidenceUrl": "https://example.test/code-review",
+            "supportingExcerpts": [
+              "Review pull requests and highlight risky changes before merge."
+            ],
+            "confidence": "high",
+            "conflicts": []
+          },
+          "rankingReason": "Its official site describes pull request review; it highlights risky changes.",
+          "rediscovery": false,
+          "rediscoveryReason": null,
+          "provenance": "fallback"
+        }
+      },
+      {
+        "snapshotId": "6e33b6bc45b0ff1d",
+        "productId": "product-meeting-notes",
+        "snapshot": {
+          "productId": "product-meeting-notes",
+          "selectedAt": "2026-09-29T19:00:00.000Z",
+          "rank": 3,
+          "freshness": 0.87,
+          "evidenceConfidence": 0.86,
+          "deterministicScore": 0.84,
+          "sourceRelativeTraction": 0.74,
+          "acceptedEvidence": {
+            "factualSummary": "Meeting notes tool that turns team discussions into assigned follow-ups.",
+            "primaryUseCase": "meeting follow-up",
+            "audience": "project teams",
+            "productType": "AI software",
+            "officialEvidenceUrl": "https://example.test/meeting-notes",
+            "supportingExcerpts": [
+              "Capture decisions and create follow-up tasks from meetings."
+            ],
+            "confidence": "high",
+            "conflicts": []
+          },
+          "rankingReason": "Officially described as meeting software; it turns decisions into follow-up tasks.",
+          "rediscovery": false,
+          "rediscoveryReason": null,
+          "provenance": "fallback"
+        }
+      },
+      {
+        "snapshotId": "408bc35555e7b9b2",
+        "productId": "product-image-workflow",
+        "snapshot": {
+          "productId": "product-image-workflow",
+          "selectedAt": "2026-09-29T19:00:00.000Z",
+          "rank": 4,
+          "freshness": 0.83,
+          "evidenceConfidence": 0.92,
+          "deterministicScore": 0.82,
+          "sourceRelativeTraction": 0.69,
+          "acceptedEvidence": {
+            "factualSummary": "Image workflow tool for generating consistent campaign assets.",
+            "primaryUseCase": "campaign asset creation",
+            "audience": "design teams",
+            "productType": "AI software",
+            "officialEvidenceUrl": "https://example.test/image-workflow",
+            "supportingExcerpts": [
+              "Create and organize campaign images with reusable brand styles."
+            ],
+            "confidence": "high",
+            "conflicts": []
+          },
+          "rankingReason": "Its official page describes image creation; reusable styles support consistent campaign assets.",
+          "rediscovery": false,
+          "rediscoveryReason": null,
+          "provenance": "fallback"
+        }
+      },
+      {
+        "snapshotId": "8dc7a3883692539e",
+        "productId": "product-data-cleanup",
+        "snapshot": {
+          "productId": "product-data-cleanup",
+          "selectedAt": "2026-09-29T19:00:00.000Z",
+          "rank": 5,
+          "freshness": 0.78,
+          "evidenceConfidence": 0.78,
+          "deterministicScore": 0.76,
+          "sourceRelativeTraction": 0.66,
+          "acceptedEvidence": {
+            "factualSummary": "Data cleanup tool that helps analysts find inconsistent rows.",
+            "primaryUseCase": "dataset cleanup",
+            "audience": "data analysts",
+            "productType": "AI software",
+            "officialEvidenceUrl": "https://example.test/data-cleanup",
+            "supportingExcerpts": [
+              "Find inconsistent records and prepare datasets for analysis."
+            ],
+            "confidence": "high",
+            "conflicts": []
+          },
+          "rankingReason": "Officially presented as a data cleanup tool; it helps prepare datasets for analysis.",
+          "rediscovery": true,
+          "rediscoveryReason": "refreshed_official_evidence",
+          "provenance": "fallback"
+        }
+      }
+    ],
+    "eligibleForApproval": true
+  },
+  "releaseDecision": {
+    "enabled": false,
+    "reason": "explicit_product_approval_required",
+    "scorecardId": "gdr-91a449490f94b024",
+    "positiveCriteria": [
+      "freshness",
+      "credibility",
+      "diversity",
+      "explanationAccuracy"
+    ],
+    "requiredPositiveCriteria": 4,
+    "approval": null
+  }
+}
