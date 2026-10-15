@@ -23,6 +23,29 @@ test("Archive source limits Products without multiplying multi-source counts", a
   assert.ok(statements.some((statement) => statement.includes('order by "products"."first_seen_at" asc')));
 });
 
+test("Archive search includes the evidence summary shown on cards without multiplying results", async () => {
+  const statements: string[] = [];
+  const client = (async (query: string) => {
+    statements.push(query);
+    if (query.includes("count(")) return { rows: [[1]] };
+    return { rows: [] };
+  }) as unknown as NeonQueryFunction<false, false>;
+  const db = drizzle(client, { schema });
+
+  const result = await listProducts({ query: "research" }, db);
+  assert.equal(result.total, 1);
+  const productStatements = statements.filter((statement) => statement.includes('from "products"') && !statement.includes("distinct"));
+  assert.equal(productStatements.length, 2);
+  for (const statement of productStatements) {
+    assert.match(statement, /exists \(select .* from "product_evidence"/);
+    assert.match(statement, /"product_evidence"\."product_id" = "products"\."id"/);
+    assert.match(statement, /"product_evidence"\."factual_summary"/);
+    assert.match(statement, /"product_evidence"\."primary_use_case"/);
+    assert.match(statement, /coalesce\(nullif\(btrim\(/);
+    assert.ok(!statement.includes(" join "));
+  }
+});
+
 test("personalized ordering ignores archive discovery sort", async () => {
   const statements: string[] = [];
   const client = (async (query: string) => {

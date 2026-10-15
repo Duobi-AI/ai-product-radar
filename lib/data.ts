@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, exists, gte, ilike, inArray, lt, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import { dailyRuns, feedback, productEvidence, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import type { ProductListing, SourceKey } from "@/lib/domain";
@@ -29,7 +29,16 @@ export async function listProducts(options: {
   const query = options.query?.trim();
   if (query) {
     const pattern = "%" + query.replace(/[\\%_]/g, "\\$&") + "%";
-    conditions.push(or(ilike(products.name, pattern), ilike(products.description, pattern))!);
+    // Cards show the factual summary, falling back to the primary use case.
+    // Search that same selected text via EXISTS so one evidence row cannot
+    // change product counts or pagination.
+    const displayedEvidenceSummary = sql<string>`coalesce(nullif(btrim(${productEvidence.factualSummary}), ''), nullif(btrim(${productEvidence.primaryUseCase}), ''))`;
+    conditions.push(or(
+      ilike(products.name, pattern),
+      ilike(products.description, pattern),
+      exists(db.select({ id: productEvidence.id }).from(productEvidence)
+        .where(and(eq(productEvidence.productId, products.id), ilike(displayedEvidenceSummary, pattern)))),
+    )!);
   }
   if (options.category && options.category !== "All categories") conditions.push(eq(products.category, options.category));
   if (!options.dailySince && options.source) {
