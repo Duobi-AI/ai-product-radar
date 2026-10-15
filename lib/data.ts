@@ -1,7 +1,7 @@
 import { and, asc, count, desc, eq, exists, gte, ilike, inArray, lt, or } from "drizzle-orm";
 import { dailyRuns, feedback, productEvidence, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
-import type { ProductListing } from "@/lib/domain";
+import type { ProductListing, SourceKey } from "@/lib/domain";
 import { rankPersonalizedProducts } from "@/lib/llm-ranking";
 import { sourceDescriptionForDisplay } from "@/lib/source-text";
 
@@ -12,7 +12,7 @@ export async function listProducts(options: {
   query?: string;
   category?: string;
   date?: string;
-  source?: string;
+  source?: SourceKey | "";
   sort?: "newest" | "oldest";
   page?: number;
   userId?: string | null;

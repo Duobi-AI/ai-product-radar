@@ -13,18 +13,28 @@ export type ArchiveFilters = {
 
 type SearchValues = Record<string, string | string[] | undefined>;
 
+function validCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1) return false;
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month && date.getUTCDate() === day;
+}
+
 export function parseArchiveFilters(params: SearchValues): ArchiveFilters {
   const value = (key: string) => typeof params[key] === "string" ? params[key] as string : "";
   const query = value("q").trim();
   const category = value("category");
-  const date = value("date");
+  const date = validCalendarDate(value("date")) ? value("date") : "";
   const sourceValue = value("source");
   const source = Object.hasOwn(SOURCE_NAMES, sourceValue) ? sourceValue as SourceKey : "";
-  const sort = value("sort") === "oldest" ? "oldest" : "newest";
+  const recommended = value("recommended") === "1";
+  const sort = !recommended && value("sort") === "oldest" ? "oldest" : "newest";
   const rawPage = Number(value("page"));
   const page = Number.isSafeInteger(rawPage) && rawPage > 0 ? rawPage : 1;
   const archive = value("archive") === "1" || Boolean(query || date || source || sort === "oldest");
-  return { query, category, date, source, sort, recommended: value("recommended") === "1", archive, page };
+  return { query, category, date, source, sort, recommended, archive, page };
 }
 
 export function archiveHref(filters: ArchiveFilters, page?: number): string {
@@ -34,7 +44,7 @@ export function archiveHref(filters: ArchiveFilters, page?: number): string {
   if (filters.category && filters.category !== "All categories") params.set("category", filters.category);
   if (filters.date) params.set("date", filters.date);
   if (filters.source) params.set("source", filters.source);
-  if (filters.sort === "oldest") params.set("sort", "oldest");
+  if (!filters.recommended && filters.sort === "oldest") params.set("sort", "oldest");
   if (filters.recommended) params.set("recommended", "1");
   if (page && page > 1) params.set("page", String(page));
   return "/" + (params.size ? `?${params}` : "");

@@ -2,15 +2,18 @@
 
 import { ArrowDown, ArrowUpRight, ArrowUp } from "lucide-react";
 import { useState } from "react";
-import type { ProductListing } from "@/lib/domain";
+import type { ProductListing, SourceKey } from "@/lib/domain";
 
 const reasons = ["Too mature", "Not relevant", "Low quality", "Already know it"];
 
-export function ProductCard({ product, signedIn }: { product: ProductListing; signedIn: boolean }) {
+export function ProductCard({ product, signedIn, filteredSource = "" }: { product: ProductListing; signedIn: boolean; filteredSource?: SourceKey | "" }) {
   const [direction, setDirection] = useState(product.feedback?.direction || 0);
   const [reason, setReason] = useState(product.feedback?.reason || "");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const visibleSources = filteredSource
+    ? [...product.sources.filter((source) => source.source === filteredSource), ...product.sources.filter((source) => source.source !== filteredSource)].slice(0, 3)
+    : product.sources.slice(0, 3);
 
   async function vote(value: -1 | 1) {
     if (!signedIn) { setMessage("Sign in to tune your feed."); return; }
@@ -31,7 +34,7 @@ export function ProductCard({ product, signedIn }: { product: ProductListing; si
       <div className="product-title-row"><h2>{product.name}</h2>{product.websiteUrl && <a className="icon-link" href={product.websiteUrl} target="_blank" rel="noreferrer" aria-label={`Visit ${product.name}`}><ArrowUpRight size={17} /></a>}</div>
       <div className="card-summary"><span className="card-summary-label">{product.evidenceSummary ? "Evidence summary" : "Source description"}</span><p className="product-description">{product.evidenceSummary || product.description || "Details are limited; explore the source to learn more."}</p></div>
       {product.rankingReason && <p className="ranking-reason"><span>Why featured</span>{product.rankingReason}</p>}
-      <div className="card-meta"><span className="category-tag">{product.category}</span><div className="source-list">{product.sources.slice(0, 3).map((source) => <a key={source.id} href={source.sourceUrl} target="_blank" rel="noreferrer">{source.sourceName}<ArrowUpRight size={11} /></a>)}</div></div>
+      <div className="card-meta"><span className="category-tag">{product.category}</span><div className="source-list">{visibleSources.map((source) => <a key={source.id} href={source.sourceUrl} target="_blank" rel="noreferrer">{source.sourceName}<ArrowUpRight size={11} /></a>)}</div></div>
       <div className="card-feedback">
         <span className="feedback-label">Relevant to you?</span>
         <div className="vote-actions">
