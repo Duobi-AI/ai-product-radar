@@ -81,6 +81,7 @@ export async function listProducts(options: {
     const evidence = evidenceByProduct.get(row.id);
     return { id: row.id, name: row.name, description: sourceDescriptionForDisplay(row.description), websiteUrl: row.websiteUrl, category: row.category, stage: row.stage,
       announcedAt: row.announcedAt, firstSeenAt: row.firstSeenAt, sources,
+      evidenceSummary: evidence?.factualSummary?.trim() || evidence?.primaryUseCase?.trim() || null,
       rankingReason: options.showRankingReasons ? evidence?.rankingReason || null : null,
       feedback: vote ? { direction: vote.direction, reason: vote.reason } : null, relevance: 0 };
   });
