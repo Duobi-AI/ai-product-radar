@@ -21,3 +21,9 @@ export function sourceDescriptionForDisplay(description: string): string {
       : reference;
   });
 }
+
+/** Select the visible official evidence text and decode source references for display. */
+export function evidenceSummaryForDisplay(evidence: { factualSummary: string | null; primaryUseCase: string | null } | undefined): string | null {
+  const selected = evidence?.factualSummary?.trim() || evidence?.primaryUseCase?.trim();
+  return selected ? sourceDescriptionForDisplay(selected) : null;
+}
