@@ -3,6 +3,7 @@ import { dailyRuns, feedback, productEvidence, productSources, products } from "
 import { getDb } from "@/lib/db";
 import type { ProductListing } from "@/lib/domain";
 import { rankPersonalizedProducts } from "@/lib/llm-ranking";
+import { sourceDescriptionForDisplay } from "@/lib/source-text";
 
 const PAGE_SIZE = 24;
 const DAILY_FEED_LIMIT = 30;
@@ -78,7 +79,7 @@ export async function listProducts(options: {
     const sources = byProduct.get(row.id) || [];
     const vote = voteByProduct.get(row.id);
     const evidence = evidenceByProduct.get(row.id);
-    return { id: row.id, name: row.name, description: row.description, websiteUrl: row.websiteUrl, category: row.category, stage: row.stage,
+    return { id: row.id, name: row.name, description: sourceDescriptionForDisplay(row.description), websiteUrl: row.websiteUrl, category: row.category, stage: row.stage,
       announcedAt: row.announcedAt, firstSeenAt: row.firstSeenAt, sources,
       rankingReason: options.showRankingReasons ? evidence?.rankingReason || null : null,
       feedback: vote ? { direction: vote.direction, reason: vote.reason } : null, relevance: 0 };
