@@ -54,3 +54,23 @@
 .source-list a{font-size:10px;color:var(--text-muted)}
 @media(prefers-reduced-motion:reduce){.product-card,.product-card:hover,.product-card:focus-within{transition:none;transform:none}}
 .ranking-reason{font-size:10px;line-height:1.45;color:var(--text-muted);margin:-7px 0 15px}
+
+/* Keep the daily brief visible while bringing the first discoveries into view. */
+.hero{padding:42px 0 26px}
+.hero h1{font-size:clamp(44px,6vw,68px);margin:16px 0 12px}
+.hero-foot{margin-top:22px}
+.feed-section{padding-top:27px}
+.product-card{min-height:0}
+.card-topline{gap:12px}
+.discovered-date{white-space:nowrap;color:var(--text-medium)}
+.product-title-row{margin-top:13px}
+.icon-link{display:inline-grid;place-items:center;width:32px;height:32px;border:1px solid var(--line);border-radius:7px}
+.icon-link:hover{background:var(--surface-selected);border-color:var(--line-selected)}
+.icon-link:focus-visible,.source-list a:focus-visible,.vote-actions button:focus-visible{outline:2px solid var(--green-text);outline-offset:2px}
+.card-summary{margin:14px 0 16px}
+.card-summary-label,.ranking-reason span{display:block;font-size:10px;font-weight:700;letter-spacing:.04em;color:var(--text-label)}
+.product-description{min-height:0;margin:5px 0 0;font-size:12px;line-height:1.5;color:var(--text-strong);-webkit-line-clamp:3}
+.ranking-reason{margin:0 0 16px;padding-left:10px;border-left:2px solid var(--line-selected);font-size:11px;line-height:1.5}
+.ranking-reason span{margin-bottom:4px}
+.card-meta{flex-wrap:wrap}
+@media(max-width:600px){.hero{padding:34px 0 24px}.hero h1{font-size:clamp(40px,11vw,54px)}.hero-foot{margin-top:18px}.feed-section{padding-top:24px}.product-card{min-height:0}}
