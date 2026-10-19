@@ -30,7 +30,7 @@ export function ProductCard({ product, signedIn, filteredSource = "" }: { produc
 
   return (
     <article className="product-card">
-      <div className="card-topline"><span className="stage"><i />{product.stage}</span><span className="discovered-date">Discovered <time dateTime={new Date(product.firstSeenAt).toISOString().slice(0, 10)}>{new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(product.firstSeenAt)}</time></span></div>
+      <div className="card-topline"><span className="stage"><i />{product.stage}</span><span className="discovered-date">Discovered <time dateTime={new Date(product.firstSeenAt).toISOString().slice(0, 10)}>{new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(product.firstSeenAt)}</time></span></div>
       <div className="product-title-row"><h2>{product.name}</h2>{product.websiteUrl && <a className="icon-link" href={product.websiteUrl} target="_blank" rel="noreferrer" aria-label={`Visit ${product.name}`}><ArrowUpRight size={17} /></a>}</div>
       <div className="card-summary"><span className="card-summary-label">{product.evidenceSummary ? "Evidence summary" : "Source description"}</span><p className="product-description">{product.evidenceSummary || product.description || "Details are limited; explore the source to learn more."}</p></div>
       {product.rankingReason && <p className="ranking-reason"><span>Why featured</span>{product.rankingReason}</p>}

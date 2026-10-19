@@ -27,3 +27,20 @@ export function evidenceSummaryForDisplay(evidence: { factualSummary: string | n
   const selected = evidence?.factualSummary?.trim() || evidence?.primaryUseCase?.trim();
   return selected ? sourceDescriptionForDisplay(selected) : null;
 }
+
+/** Search the same decoded text that Product cards display. */
+export function matchesProductSearch(product: {
+  name: string;
+  description: string;
+  factualSummary: string | null;
+  primaryUseCase: string | null;
+}, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  const visibleText = [
+    product.name,
+    sourceDescriptionForDisplay(product.description),
+    evidenceSummaryForDisplay(product),
+  ];
+  return visibleText.some((value) => value?.toLocaleLowerCase().includes(needle));
+}

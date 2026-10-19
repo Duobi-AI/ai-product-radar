@@ -23,27 +23,23 @@ test("Archive source limits Products without multiplying multi-source counts", a
   assert.ok(statements.some((statement) => statement.includes('order by "products"."first_seen_at" asc')));
 });
 
-test("Archive search includes the evidence summary shown on cards without multiplying results", async () => {
+test("Archive search matches decoded card text, not encoded entity names", async () => {
   const statements: string[] = [];
   const client = (async (query: string) => {
     statements.push(query);
-    if (query.includes("count(")) return { rows: [[1]] };
+    if (query.includes('left join "product_evidence"')) return { rows: [
+      ["source", "Source product", "R&amp;D tools", null, null],
+      ["evidence", "Evidence product", "Unrelated", "R&#38;D assistant", null],
+      ["plain", "Plain product", "An ample tool", null, null],
+    ] };
     return { rows: [] };
   }) as unknown as NeonQueryFunction<false, false>;
   const db = drizzle(client, { schema });
 
-  const result = await listProducts({ query: "research" }, db);
-  assert.equal(result.total, 1);
-  const productStatements = statements.filter((statement) => statement.includes('from "products"') && !statement.includes("distinct"));
-  assert.equal(productStatements.length, 2);
-  for (const statement of productStatements) {
-    assert.match(statement, /exists \(select .* from "product_evidence"/);
-    assert.match(statement, /"product_evidence"\."product_id" = "products"\."id"/);
-    assert.match(statement, /"product_evidence"\."factual_summary"/);
-    assert.match(statement, /"product_evidence"\."primary_use_case"/);
-    assert.match(statement, /coalesce\(nullif\(btrim\(/);
-    assert.ok(!statement.includes(" join "));
-  }
+  assert.equal((await listProducts({ query: "R&D" }, db)).total, 2);
+  assert.equal((await listProducts({ query: "amp" }, db)).total, 1);
+  assert.ok(statements.some((statement) => statement.includes('left join "product_evidence"')));
+  assert.ok(statements.every((statement) => !statement.includes("count(")));
 });
 
 test("personalized ordering ignores archive discovery sort", async () => {

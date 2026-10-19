@@ -1,9 +1,9 @@
-import { and, asc, count, desc, eq, exists, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gte, inArray, lt } from "drizzle-orm";
 import { dailyRuns, feedback, productEvidence, productSources, products } from "@/db/schema";
 import { getDb } from "@/lib/db";
 import type { ProductListing, SourceKey } from "@/lib/domain";
 import { rankPersonalizedProducts } from "@/lib/llm-ranking";
-import { evidenceSummaryForDisplay, sourceDescriptionForDisplay } from "@/lib/source-text";
+import { evidenceSummaryForDisplay, matchesProductSearch, sourceDescriptionForDisplay } from "@/lib/source-text";
 
 const PAGE_SIZE = 24;
 const DAILY_FEED_LIMIT = 30;
@@ -27,19 +27,6 @@ export async function listProducts(options: {
 
   const conditions = [];
   const query = options.query?.trim();
-  if (query) {
-    const pattern = "%" + query.replace(/[\\%_]/g, "\\$&") + "%";
-    // Cards show the factual summary, falling back to the primary use case.
-    // Search that same selected text via EXISTS so one evidence row cannot
-    // change product counts or pagination.
-    const displayedEvidenceSummary = sql<string>`coalesce(nullif(btrim(${productEvidence.factualSummary}), ''), nullif(btrim(${productEvidence.primaryUseCase}), ''))`;
-    conditions.push(or(
-      ilike(products.name, pattern),
-      ilike(products.description, pattern),
-      exists(db.select({ id: productEvidence.id }).from(productEvidence)
-        .where(and(eq(productEvidence.productId, products.id), ilike(displayedEvidenceSummary, pattern)))),
-    )!);
-  }
   if (options.category && options.category !== "All categories") conditions.push(eq(products.category, options.category));
   if (!options.dailySince && options.source) {
     conditions.push(exists(db.select({ id: productSources.id }).from(productSources)
@@ -53,9 +40,15 @@ export async function listProducts(options: {
       conditions.push(lt(products.firstSeenAt, new Date(start.getTime() + 86_400_000)));
     }
   }
-  const where = conditions.length ? and(...conditions) : undefined;
-  const [totalResult, categoryRows, allFeedback] = await Promise.all([
-    db.select({ value: count() }).from(products).where(where),
+  const baseWhere = conditions.length ? and(...conditions) : undefined;
+  const [matchingIds, totalResult, categoryRows, allFeedback] = await Promise.all([
+    query
+      ? db.select({ id: products.id, name: products.name, description: products.description,
+          factualSummary: productEvidence.factualSummary, primaryUseCase: productEvidence.primaryUseCase })
+          .from(products).leftJoin(productEvidence, eq(productEvidence.productId, products.id)).where(baseWhere)
+          .then((rows) => rows.filter((row) => matchesProductSearch(row, query)).map((row) => row.id))
+      : Promise.resolve(null),
+    query ? Promise.resolve(null) : db.select({ value: count() }).from(products).where(baseWhere),
     db.selectDistinct({ category: products.category }).from(products).orderBy(products.category),
     options.userId && options.recommended
       ? db.select({ direction: feedback.direction, reason: feedback.reason, name: products.name, description: products.description,
@@ -65,9 +58,11 @@ export async function listProducts(options: {
       : Promise.resolve([] as { direction: number; reason: string | null; name: string; description: string; category: string; stage: string; updatedAt: Date }[]),
   ]);
 
-  const rawTotal = Number(totalResult[0]?.value || 0);
+  const rawTotal = matchingIds ? matchingIds.length : Number(totalResult?.[0]?.value || 0);
   const requestedPage = Number.isSafeInteger(options.page) && (options.page || 0) > 0 ? options.page! : 1;
   const page = options.dailySince ? 1 : Math.min(requestedPage, Math.max(1, Math.ceil(rawTotal / PAGE_SIZE)));
+  if (!rawTotal) return { items: [] as ProductListing[], total: 0, categories: categoryRows.map((row) => row.category), page, pageSize, ready: true };
+  const where = matchingIds ? and(baseWhere, inArray(products.id, matchingIds)) : baseWhere;
   const rankBeforePagination = Boolean(options.dailySince || (options.recommended && options.userId));
   const discoverySort = options.recommended && options.userId ? "newest" : options.sort;
   let rankingNotice: string | undefined;
@@ -79,7 +74,7 @@ export async function listProducts(options: {
     .limit(rankBeforePagination ? 2500 : PAGE_SIZE)
     .offset(rankBeforePagination ? 0 : (page - 1) * PAGE_SIZE);
   const ids = rows.map((row) => row.id);
-  if (!ids.length) return { items: [] as ProductListing[], total: options.dailySince ? 0 : Number(totalResult[0]?.value || 0), categories: categoryRows.map((row) => row.category), page, pageSize, ready: true };
+  if (!ids.length) return { items: [] as ProductListing[], total: options.dailySince ? 0 : rawTotal, categories: categoryRows.map((row) => row.category), page, pageSize, ready: true };
 
   const [mentions, evidenceRows, votes] = await Promise.all([
     db.select().from(productSources).where(inArray(productSources.productId, ids)),
