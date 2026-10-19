@@ -16,6 +16,7 @@ export type ProductListing = {
   stage: string;
   announcedAt: Date | null;
   firstSeenAt: Date;
+  evidenceSummary: string | null;
   rankingReason: string | null;
   sources: {
     id: string;
